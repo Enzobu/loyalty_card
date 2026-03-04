@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:barcode_widget/barcode_widget.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:http/http.dart' as http;
 import 'package:mobile_scanner/mobile_scanner.dart' as ms;
 import 'package:provider/provider.dart';
 import 'package:reorderable_grid_view/reorderable_grid_view.dart';
@@ -17,31 +18,213 @@ enum CardSortMode { alphabetical, custom }
 enum AppThemePreference { system, light, dark }
 
 class StoreBrand {
-  const StoreBrand({required this.id, required this.name});
+  const StoreBrand({required this.id, required this.name, this.logoUrl});
 
   final String id;
   final String name;
+  final String? logoUrl;
+
+  Map<String, dynamic> toJson() {
+    return <String, dynamic>{'id': id, 'name': name, 'logoUrl': logoUrl};
+  }
+
+  static StoreBrand fromJson(Map<String, dynamic> json) {
+    return StoreBrand(
+      id: json['id'] as String,
+      name: json['name'] as String,
+      logoUrl: json['logoUrl'] as String?,
+    );
+  }
 }
 
-const List<StoreBrand> kMockBrands = <StoreBrand>[
-  StoreBrand(id: 'carrefour', name: 'Carrefour'),
-  StoreBrand(id: 'leclerc', name: 'E.Leclerc'),
-  StoreBrand(id: 'intermarche', name: 'Intermarche'),
-  StoreBrand(id: 'auchan', name: 'Auchan'),
-  StoreBrand(id: 'lidl', name: 'Lidl'),
-  StoreBrand(id: 'decathlon', name: 'Decathlon'),
-  StoreBrand(id: 'fnac', name: 'Fnac'),
-  StoreBrand(id: 'ikea', name: 'IKEA'),
-  StoreBrand(id: 'sephora', name: 'Sephora'),
-  StoreBrand(id: 'monoprix', name: 'Monoprix'),
-  StoreBrand(id: 'other', name: 'Autre'),
-];
+class BrandRepository {
+  BrandRepository._();
+
+  static final BrandRepository instance = BrandRepository._();
+
+  static const String _cacheKey = 'brands_cache_v1';
+  static const String _cacheTimestampKey = 'brands_cache_ts_v1';
+  static const Duration _cacheTtl = Duration(hours: 24);
+
+  final http.Client _client = http.Client();
+
+  Future<List<StoreBrand>> getBrands({bool forceRefresh = false}) async {
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    final List<StoreBrand> cached = _readCachedBrands(prefs);
+    final int? cacheTs = prefs.getInt(_cacheTimestampKey);
+
+    final bool hasFreshCache =
+        !forceRefresh &&
+        cached.isNotEmpty &&
+        cacheTs != null &&
+        DateTime.now().millisecondsSinceEpoch - cacheTs <
+            _cacheTtl.inMilliseconds;
+
+    if (hasFreshCache) {
+      return cached;
+    }
+
+    try {
+      final List<StoreBrand> remote = await _fetchRemoteBrands();
+      if (remote.isNotEmpty) {
+        await prefs.setString(
+          _cacheKey,
+          jsonEncode(remote.map((StoreBrand brand) => brand.toJson()).toList()),
+        );
+        await prefs.setInt(
+          _cacheTimestampKey,
+          DateTime.now().millisecondsSinceEpoch,
+        );
+      }
+      return remote.isNotEmpty ? remote : cached;
+    } catch (_) {
+      if (cached.isNotEmpty) {
+        return cached;
+      }
+      rethrow;
+    }
+  }
+
+  List<StoreBrand> _readCachedBrands(SharedPreferences prefs) {
+    final String? raw = prefs.getString(_cacheKey);
+    if (raw == null || raw.isEmpty) {
+      return <StoreBrand>[];
+    }
+
+    try {
+      final List<dynamic> decoded = jsonDecode(raw) as List<dynamic>;
+      return decoded
+          .map(
+            (dynamic value) => StoreBrand.fromJson(
+              Map<String, dynamic>.from(value as Map<dynamic, dynamic>),
+            ),
+          )
+          .toList();
+    } catch (_) {
+      return <StoreBrand>[];
+    }
+  }
+
+  Future<List<StoreBrand>> _fetchRemoteBrands() async {
+    const String query = '''
+SELECT DISTINCT ?item ?itemLabel ?logo
+WHERE {
+  ?item wdt:P31/wdt:P279* wd:Q507619.
+  {
+    ?item wdt:P17 wd:Q142.
+  }
+  UNION
+  {
+    ?item wdt:P159/wdt:P17 wd:Q142.
+  }
+  OPTIONAL { ?item wdt:P154 ?logo. }
+  SERVICE wikibase:label { bd:serviceParam wikibase:language "fr,en". }
+}
+LIMIT 800
+''';
+
+    final Uri uri = Uri.https('query.wikidata.org', '/sparql', <String, String>{
+      'format': 'json',
+      'query': query,
+    });
+
+    final http.Response response = await _client
+        .get(
+          uri,
+          headers: <String, String>{
+            'Accept': 'application/sparql-results+json',
+            'User-Agent': 'loyalty_card/1.0 (flutter-app)',
+          },
+        )
+        .timeout(const Duration(seconds: 12));
+
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception('HTTP ${response.statusCode}');
+    }
+
+    final Map<String, dynamic> decoded =
+        jsonDecode(response.body) as Map<String, dynamic>;
+    final List<dynamic> bindings =
+        ((decoded['results'] as Map<String, dynamic>)['bindings']
+            as List<dynamic>?) ??
+        <dynamic>[];
+
+    final Map<String, StoreBrand> dedup = <String, StoreBrand>{};
+
+    for (final dynamic rowDynamic in bindings) {
+      final Map<String, dynamic> row = Map<String, dynamic>.from(
+        rowDynamic as Map<dynamic, dynamic>,
+      );
+      final String? itemValue = _bindingValue(row, 'item');
+      final String? label = _bindingValue(row, 'itemLabel');
+
+      if (itemValue == null || label == null) {
+        continue;
+      }
+
+      final String cleanLabel = label.trim();
+      if (cleanLabel.isEmpty || cleanLabel.length < 2) {
+        continue;
+      }
+
+      final String id = itemValue.split('/').last;
+      final String key = cleanLabel.toLowerCase();
+      if (dedup.containsKey(key)) {
+        continue;
+      }
+
+      dedup[key] = StoreBrand(
+        id: id,
+        name: cleanLabel,
+        logoUrl: _toLogoUrl(_bindingValue(row, 'logo')),
+      );
+    }
+
+    final List<StoreBrand> brands = dedup.values.toList()
+      ..sort(
+        (StoreBrand a, StoreBrand b) =>
+            a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+      );
+
+    return brands;
+  }
+
+  static String? _bindingValue(Map<String, dynamic> row, String key) {
+    final dynamic node = row[key];
+    if (node is! Map<dynamic, dynamic>) {
+      return null;
+    }
+    final dynamic value = node['value'];
+    if (value is! String) {
+      return null;
+    }
+    return value;
+  }
+
+  static String? _toLogoUrl(String? raw) {
+    if (raw == null || raw.trim().isEmpty) {
+      return null;
+    }
+
+    if (raw.startsWith('http://') || raw.startsWith('https://')) {
+      return raw.replaceFirst('http://', 'https://');
+    }
+
+    String fileName = raw;
+    if (fileName.startsWith('File:')) {
+      fileName = fileName.substring(5);
+    }
+
+    return 'https://commons.wikimedia.org/wiki/Special:FilePath/${Uri.encodeComponent(fileName)}';
+  }
+}
 
 class LoyaltyCardModel {
   LoyaltyCardModel({
     required this.id,
     required this.brandId,
     required this.brandName,
+    required this.brandLogoUrl,
     required this.cardNumber,
     required this.codeType,
     required this.createdAt,
@@ -50,6 +233,7 @@ class LoyaltyCardModel {
   final String id;
   final String brandId;
   final String brandName;
+  final String? brandLogoUrl;
   final String cardNumber;
   final CardCodeType codeType;
   final DateTime createdAt;
@@ -57,6 +241,7 @@ class LoyaltyCardModel {
   LoyaltyCardModel copyWith({
     String? brandId,
     String? brandName,
+    String? brandLogoUrl,
     String? cardNumber,
     CardCodeType? codeType,
   }) {
@@ -64,6 +249,7 @@ class LoyaltyCardModel {
       id: id,
       brandId: brandId ?? this.brandId,
       brandName: brandName ?? this.brandName,
+      brandLogoUrl: brandLogoUrl ?? this.brandLogoUrl,
       cardNumber: cardNumber ?? this.cardNumber,
       codeType: codeType ?? this.codeType,
       createdAt: createdAt,
@@ -75,6 +261,7 @@ class LoyaltyCardModel {
       'id': id,
       'brandId': brandId,
       'brandName': brandName,
+      'brandLogoUrl': brandLogoUrl,
       'cardNumber': cardNumber,
       'codeType': codeType.name,
       'createdAt': createdAt.toIso8601String(),
@@ -86,6 +273,7 @@ class LoyaltyCardModel {
       id: json['id'] as String,
       brandId: json['brandId'] as String,
       brandName: json['brandName'] as String,
+      brandLogoUrl: json['brandLogoUrl'] as String?,
       cardNumber: json['cardNumber'] as String,
       codeType: (json['codeType'] as String) == CardCodeType.qr.name
           ? CardCodeType.qr
@@ -206,6 +394,7 @@ class AppState extends ChangeNotifier {
       id: DateTime.now().microsecondsSinceEpoch.toString(),
       brandId: brand.id,
       brandName: brand.name,
+      brandLogoUrl: brand.logoUrl,
       cardNumber: cardNumber,
       codeType: codeType,
       createdAt: DateTime.now(),
@@ -524,6 +713,62 @@ class _HomePageState extends State<HomePage> {
   }
 }
 
+class _BrandAvatar extends StatelessWidget {
+  const _BrandAvatar({
+    required this.name,
+    required this.logoUrl,
+    this.radius = 18,
+  });
+
+  final String name;
+  final String? logoUrl;
+  final double radius;
+
+  @override
+  Widget build(BuildContext context) {
+    final String firstLetter = name.isEmpty ? '?' : name[0].toUpperCase();
+
+    if (logoUrl == null || logoUrl!.isEmpty) {
+      return CircleAvatar(
+        radius: radius,
+        backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+        child: Text(
+          firstLetter,
+          style: TextStyle(
+            fontWeight: FontWeight.w700,
+            color: Theme.of(context).colorScheme.onPrimaryContainer,
+          ),
+        ),
+      );
+    }
+
+    return CircleAvatar(
+      radius: radius,
+      backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+      child: ClipOval(
+        child: Image.network(
+          logoUrl!,
+          width: radius * 2,
+          height: radius * 2,
+          fit: BoxFit.cover,
+          errorBuilder:
+              (BuildContext context, Object error, StackTrace? stackTrace) {
+                return Center(
+                  child: Text(
+                    firstLetter,
+                    style: TextStyle(
+                      fontWeight: FontWeight.w700,
+                      color: Theme.of(context).colorScheme.onPrimaryContainer,
+                    ),
+                  ),
+                );
+              },
+        ),
+      ),
+    );
+  }
+}
+
 class _CardTile extends StatelessWidget {
   const _CardTile({required this.card, super.key});
 
@@ -546,15 +791,10 @@ class _CardTile extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
-              CircleAvatar(
-                backgroundColor: Theme.of(context).colorScheme.primaryContainer,
-                child: Text(
-                  card.brandName.substring(0, 1).toUpperCase(),
-                  style: TextStyle(
-                    fontWeight: FontWeight.w700,
-                    color: Theme.of(context).colorScheme.onPrimaryContainer,
-                  ),
-                ),
+              _BrandAvatar(
+                name: card.brandName,
+                logoUrl: card.brandLogoUrl,
+                radius: 20,
               ),
               const Spacer(),
               Text(
@@ -624,7 +864,18 @@ class BrandSelectionPage extends StatefulWidget {
 
 class _BrandSelectionPageState extends State<BrandSelectionPage> {
   final TextEditingController _searchController = TextEditingController();
+  final BrandRepository _brandRepository = BrandRepository.instance;
+
+  List<StoreBrand> _brands = <StoreBrand>[];
   String _search = '';
+  bool _isLoading = true;
+  String? _errorMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadBrands();
+  }
 
   @override
   void dispose() {
@@ -632,15 +883,92 @@ class _BrandSelectionPageState extends State<BrandSelectionPage> {
     super.dispose();
   }
 
+  Future<void> _loadBrands({bool forceRefresh = false}) async {
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
+
+    try {
+      final List<StoreBrand> brands = await _brandRepository.getBrands(
+        forceRefresh: forceRefresh,
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _brands = brands;
+        _isLoading = false;
+      });
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _isLoading = false;
+        _errorMessage =
+            'Impossible de charger les enseignes. Verifie la connexion puis reessaie.';
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final String query = _search.trim().toLowerCase();
-    final List<StoreBrand> filtered = kMockBrands
+    final List<StoreBrand> filtered = _brands
         .where((StoreBrand b) => b.name.toLowerCase().contains(query))
         .toList();
 
+    Widget content;
+    if (_isLoading && _brands.isEmpty) {
+      content = const Center(child: CircularProgressIndicator());
+    } else if (_errorMessage != null && _brands.isEmpty) {
+      content = Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            Text(_errorMessage!, textAlign: TextAlign.center),
+            const SizedBox(height: 12),
+            FilledButton(
+              onPressed: () => _loadBrands(forceRefresh: true),
+              child: const Text('Reessayer'),
+            ),
+          ],
+        ),
+      );
+    } else if (filtered.isEmpty) {
+      content = const Center(child: Text('Aucune enseigne trouvee'));
+    } else {
+      content = ListView.separated(
+        itemCount: filtered.length,
+        separatorBuilder: (_, _) => const SizedBox(height: 8),
+        itemBuilder: (BuildContext context, int index) {
+          final StoreBrand brand = filtered[index];
+          return Card(
+            child: ListTile(
+              leading: _BrandAvatar(name: brand.name, logoUrl: brand.logoUrl),
+              title: Text(brand.name),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.of(context).pop(brand),
+            ),
+          );
+        },
+      );
+    }
+
     return Scaffold(
-      appBar: AppBar(title: const Text('Choisir une enseigne')),
+      appBar: AppBar(
+        title: const Text('Choisir une enseigne'),
+        actions: <Widget>[
+          IconButton(
+            onPressed: () => _loadBrands(forceRefresh: true),
+            icon: const Icon(Icons.refresh),
+          ),
+        ],
+      ),
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
@@ -654,23 +982,7 @@ class _BrandSelectionPageState extends State<BrandSelectionPage> {
               ),
             ),
             const SizedBox(height: 12),
-            Expanded(
-              child: ListView.separated(
-                itemCount: filtered.length,
-                separatorBuilder: (_, _) => const SizedBox(height: 8),
-                itemBuilder: (BuildContext context, int index) {
-                  final StoreBrand brand = filtered[index];
-                  return Card(
-                    child: ListTile(
-                      leading: CircleAvatar(child: Text(brand.name[0])),
-                      title: Text(brand.name),
-                      trailing: const Icon(Icons.chevron_right),
-                      onTap: () => Navigator.of(context).pop(brand),
-                    ),
-                  );
-                },
-              ),
-            ),
+            Expanded(child: content),
           ],
         ),
       ),
@@ -728,7 +1040,10 @@ class _CardFormPageState extends State<CardFormPage> {
             children: <Widget>[
               Card(
                 child: ListTile(
-                  leading: CircleAvatar(child: Text(widget.brand.name[0])),
+                  leading: _BrandAvatar(
+                    name: widget.brand.name,
+                    logoUrl: widget.brand.logoUrl,
+                  ),
                   title: Text(widget.brand.name),
                   subtitle: const Text('Enseigne selectionnee'),
                 ),
@@ -932,6 +1247,7 @@ class _CardDetailPageState extends State<CardDetailPage> {
                 final StoreBrand brand = StoreBrand(
                   id: card.brandId,
                   name: card.brandName,
+                  logoUrl: card.brandLogoUrl,
                 );
                 await Navigator.of(context).push<void>(
                   MaterialPageRoute<void>(
