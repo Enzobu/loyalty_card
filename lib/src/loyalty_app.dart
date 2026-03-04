@@ -1,14 +1,18 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:barcode_widget/barcode_widget.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
 import 'package:mobile_scanner/mobile_scanner.dart' as ms;
+import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import 'package:reorderable_grid_view/reorderable_grid_view.dart';
 import 'package:screen_brightness/screen_brightness.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 enum CardCodeType { barcode, qr }
@@ -474,6 +478,18 @@ class LoyaltyCardModel {
   }
 }
 
+class CardsImportResult {
+  const CardsImportResult({
+    required this.added,
+    required this.replaced,
+    required this.ignored,
+  });
+
+  final int added;
+  final int replaced;
+  final int ignored;
+}
+
 class AppState extends ChangeNotifier {
   AppState() {
     _load();
@@ -574,6 +590,117 @@ class AppState extends ChangeNotifier {
       _cards.map((LoyaltyCardModel card) => card.toJson()).toList(),
     );
     await prefs.setString(_cardsKey, encoded);
+  }
+
+  String exportCardsJson() {
+    final Map<String, dynamic> payload = <String, dynamic>{
+      'format': 'loyalty_card_export',
+      'version': 1,
+      'exportedAt': DateTime.now().toUtc().toIso8601String(),
+      'cards': _cards.map((LoyaltyCardModel card) => card.toJson()).toList(),
+    };
+    return const JsonEncoder.withIndent('  ').convert(payload);
+  }
+
+  Future<CardsImportResult> importCardsJson(String rawJson) async {
+    final String trimmed = rawJson.trim();
+    if (trimmed.isEmpty) {
+      throw const FormatException('Le fichier est vide.');
+    }
+
+    final dynamic decoded = jsonDecode(trimmed);
+
+    List<dynamic> rawCards;
+    if (decoded is List<dynamic>) {
+      rawCards = decoded;
+    } else if (decoded is Map<String, dynamic>) {
+      final dynamic rawFormat = decoded['format'];
+      if (rawFormat != null && rawFormat != 'loyalty_card_export') {
+        throw const FormatException('Format non supporte.');
+      }
+      final dynamic cardsNode = decoded['cards'];
+      if (cardsNode is! List<dynamic>) {
+        throw const FormatException('Le fichier ne contient pas de cartes.');
+      }
+      rawCards = cardsNode;
+    } else {
+      throw const FormatException('Structure JSON invalide.');
+    }
+
+    int added = 0;
+    int replaced = 0;
+    int ignored = 0;
+
+    final Set<String> usedIds = _cards
+        .map((LoyaltyCardModel card) => card.id)
+        .toSet();
+
+    for (final dynamic entry in rawCards) {
+      if (entry is! Map<dynamic, dynamic>) {
+        ignored += 1;
+        continue;
+      }
+
+      LoyaltyCardModel imported;
+      try {
+        imported = LoyaltyCardModel.fromJson(Map<String, dynamic>.from(entry));
+      } catch (_) {
+        ignored += 1;
+        continue;
+      }
+
+      final String normalizedImported = _normalizeCardNumber(
+        imported.cardNumber,
+      );
+      if (normalizedImported.isEmpty) {
+        ignored += 1;
+        continue;
+      }
+
+      final int existingIndex = _cards.indexWhere(
+        (LoyaltyCardModel card) =>
+            _normalizeCardNumber(card.cardNumber) == normalizedImported,
+      );
+
+      if (existingIndex != -1) {
+        final LoyaltyCardModel existing = _cards[existingIndex];
+        _cards[existingIndex] = LoyaltyCardModel(
+          id: existing.id,
+          brandId: imported.brandId,
+          brandName: imported.brandName,
+          brandLogoUrl: imported.brandLogoUrl,
+          cardNumber: imported.cardNumber,
+          codeType: imported.codeType,
+          createdAt: existing.createdAt,
+        );
+        replaced += 1;
+        continue;
+      }
+
+      final String uniqueId = _nextUniqueId(imported.id, usedIds);
+      usedIds.add(uniqueId);
+      _cards.add(
+        LoyaltyCardModel(
+          id: uniqueId,
+          brandId: imported.brandId,
+          brandName: imported.brandName,
+          brandLogoUrl: imported.brandLogoUrl,
+          cardNumber: imported.cardNumber,
+          codeType: imported.codeType,
+          createdAt: imported.createdAt,
+        ),
+      );
+      added += 1;
+    }
+
+    await _saveCards();
+    notifyListeners();
+
+    return CardsImportResult(
+      added: added,
+      replaced: replaced,
+      ignored: ignored,
+    );
   }
 
   Future<void> addCard({
@@ -677,6 +804,23 @@ class AppState extends ChangeNotifier {
   void setSearchQuery(String value) {
     _searchQuery = value;
     notifyListeners();
+  }
+
+  static String _normalizeCardNumber(String value) {
+    return value.trim().replaceAll(RegExp(r'[\s\-]+'), '').toLowerCase();
+  }
+
+  static String _nextUniqueId(String requestedId, Set<String> usedIds) {
+    final String cleanRequested = requestedId.trim();
+    if (cleanRequested.isNotEmpty && !usedIds.contains(cleanRequested)) {
+      return cleanRequested;
+    }
+
+    String generated = DateTime.now().microsecondsSinceEpoch.toString();
+    while (usedIds.contains(generated)) {
+      generated = '${DateTime.now().microsecondsSinceEpoch}_${usedIds.length}';
+    }
+    return generated;
   }
 }
 
@@ -1667,8 +1811,16 @@ class _CardDetailPageState extends State<CardDetailPage> {
   }
 }
 
-class SettingsPage extends StatelessWidget {
+class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
+
+  @override
+  State<SettingsPage> createState() => _SettingsPageState();
+}
+
+class _SettingsPageState extends State<SettingsPage> {
+  bool _isExporting = false;
+  bool _isImporting = false;
 
   @override
   Widget build(BuildContext context) {
@@ -1677,8 +1829,7 @@ class SettingsPage extends StatelessWidget {
       appBar: AppBar(title: const Text('Parametres')),
       body: Padding(
         padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        child: ListView(
           children: <Widget>[
             const Text(
               'Theme',
@@ -1710,9 +1861,207 @@ class SettingsPage extends StatelessWidget {
                 unawaited(state.setThemePreference(values.first));
               },
             ),
+            const SizedBox(height: 28),
+            const Text(
+              'Sauvegarde',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'Exporte tes cartes en JSON dans Telechargements ou importe un fichier JSON.',
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: <Widget>[
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _isExporting || _isImporting
+                        ? null
+                        : _exportJson,
+                    icon: _isExporting
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.upload_file_outlined),
+                    label: const Text('Exporter JSON'),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: _isImporting || _isExporting
+                        ? null
+                        : _importJson,
+                    icon: _isImporting
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
+                            ),
+                          )
+                        : const Icon(Icons.download_outlined),
+                    label: const Text('Importer JSON'),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Import: remplace une carte existante si le numero est identique (espaces et tirets ignores).',
+              style: TextStyle(fontSize: 12),
+            ),
           ],
         ),
       ),
     );
+  }
+
+  Future<void> _exportJson() async {
+    setState(() {
+      _isExporting = true;
+    });
+
+    try {
+      final AppState state = context.read<AppState>();
+      final String json = state.exportCardsJson();
+      final String timestamp = _fileTimestamp(DateTime.now());
+      final Directory exportDir = await _resolveExportDirectory();
+      final File file = File('${exportDir.path}/loyalty_cards_$timestamp.json');
+
+      await file.writeAsString(json, flush: true);
+
+      if (!mounted) {
+        return;
+      }
+      await showDialog<void>(
+        context: context,
+        builder: (BuildContext dialogContext) {
+          return AlertDialog(
+            title: const Text('Export termine'),
+            content: Text('Fichier cree avec succes:\n${file.path}'),
+            actions: <Widget>[
+              OutlinedButton.icon(
+                onPressed: () async {
+                  await Share.shareXFiles(<XFile>[XFile(file.path)]);
+                },
+                icon: const Icon(Icons.share_outlined),
+                label: const Text('Partager'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(dialogContext).pop(),
+                child: const Text('OK'),
+              ),
+            ],
+          );
+        },
+      );
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Echec de l\'export JSON.')));
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isExporting = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _importJson() async {
+    setState(() {
+      _isImporting = true;
+    });
+
+    try {
+      final AppState state = context.read<AppState>();
+      final FilePickerResult? result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: <String>['json'],
+        withData: true,
+      );
+
+      if (result == null || result.files.isEmpty) {
+        return;
+      }
+
+      final PlatformFile picked = result.files.single;
+      String content;
+
+      if (picked.bytes != null) {
+        content = utf8.decode(picked.bytes!);
+      } else if (picked.path != null && picked.path!.isNotEmpty) {
+        content = await File(picked.path!).readAsString();
+      } else {
+        throw const FormatException('Fichier non lisible.');
+      }
+
+      final CardsImportResult report = await state.importCardsJson(content);
+
+      if (!mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Import termine: ${report.added} ajoutes, ${report.replaced} remplaces, ${report.ignored} ignores.',
+          ),
+        ),
+      );
+    } on FormatException catch (error) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(error.message)));
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Echec de l\'import JSON.')));
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isImporting = false;
+        });
+      }
+    }
+  }
+
+  static String _twoDigits(int value) {
+    return value.toString().padLeft(2, '0');
+  }
+
+  static String _fileTimestamp(DateTime time) {
+    return '${time.year}${_twoDigits(time.month)}${_twoDigits(time.day)}_${_twoDigits(time.hour)}${_twoDigits(time.minute)}${_twoDigits(time.second)}';
+  }
+
+  Future<Directory> _resolveExportDirectory() async {
+    if (Platform.isAndroid) {
+      final Directory androidDownloads = Directory(
+        '/storage/emulated/0/Download',
+      );
+      if (await androidDownloads.exists()) {
+        return androidDownloads;
+      }
+    }
+
+    final Directory? downloads = await getDownloadsDirectory();
+    if (downloads != null) {
+      return downloads;
+    }
+
+    return getApplicationDocumentsDirectory();
   }
 }
