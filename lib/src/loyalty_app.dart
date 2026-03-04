@@ -42,11 +42,98 @@ class BrandRepository {
 
   static final BrandRepository instance = BrandRepository._();
 
-  static const String _cacheKey = 'brands_cache_v1';
+  static const String _cacheKey = 'brands_cache_v2';
   static const String _cacheTimestampKey = 'brands_cache_ts_v1';
   static const Duration _cacheTtl = Duration(hours: 24);
 
   final http.Client _client = http.Client();
+
+  Future<List<StoreBrand>> searchBrands(String query) async {
+    final String normalizedQuery = query.trim();
+    if (normalizedQuery.length < 2) {
+      return <StoreBrand>[];
+    }
+
+    final Uri uri =
+        Uri.https('www.wikidata.org', '/w/api.php', <String, String>{
+          'action': 'wbsearchentities',
+          'format': 'json',
+          'language': 'fr',
+          'uselang': 'fr',
+          'type': 'item',
+          'limit': '20',
+          'search': normalizedQuery,
+        });
+
+    final http.Response response = await _client
+        .get(
+          uri,
+          headers: <String, String>{
+            'User-Agent': 'loyalty_card/1.0 (flutter-app)',
+          },
+        )
+        .timeout(const Duration(seconds: 10));
+
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception('HTTP ${response.statusCode}');
+    }
+
+    final Map<String, dynamic> decoded =
+        jsonDecode(response.body) as Map<String, dynamic>;
+    final List<dynamic> matches =
+        decoded['search'] as List<dynamic>? ?? <dynamic>[];
+
+    final List<Map<String, String>> parsed = <Map<String, String>>[];
+    for (final dynamic value in matches) {
+      final Map<String, dynamic> row = Map<String, dynamic>.from(
+        value as Map<dynamic, dynamic>,
+      );
+
+      final String? id = row['id'] as String?;
+      final String? name = row['label'] as String?;
+      final String? description = row['description'] as String?;
+
+      if (id == null ||
+          !id.startsWith('Q') ||
+          name == null ||
+          name.trim().isEmpty) {
+        continue;
+      }
+
+      if (description != null) {
+        final String lowerDescription = description.toLowerCase();
+        if (lowerDescription.contains('homonymie') ||
+            lowerDescription.contains('disambiguation')) {
+          continue;
+        }
+      }
+
+      parsed.add(<String, String>{'id': id, 'name': name.trim()});
+    }
+
+    final Map<String, Map<String, String?>> mediaById =
+        await _fetchBrandMediaById(
+          parsed.map((Map<String, String> row) => row['id']!).toList(),
+        );
+
+    final Map<String, StoreBrand> dedup = <String, StoreBrand>{};
+    for (final Map<String, String> row in parsed) {
+      final String id = row['id']!;
+      final String name = row['name']!;
+      final String key = name.toLowerCase();
+      if (dedup.containsKey(key)) {
+        continue;
+      }
+
+      final Map<String, String?> media = mediaById[id] ?? <String, String?>{};
+      final String? logoUrl =
+          media['logoUrl'] ?? _toWebsiteLogoUrl(media['website']);
+
+      dedup[key] = StoreBrand(id: id, name: name, logoUrl: logoUrl);
+    }
+
+    return dedup.values.toList();
+  }
 
   Future<List<StoreBrand>> getBrands({bool forceRefresh = false}) async {
     final SharedPreferences prefs = await SharedPreferences.getInstance();
@@ -107,7 +194,7 @@ class BrandRepository {
 
   Future<List<StoreBrand>> _fetchRemoteBrands() async {
     const String query = '''
-SELECT DISTINCT ?item ?itemLabel ?logo
+SELECT DISTINCT ?item ?itemLabel ?logo ?website
 WHERE {
   ?item wdt:P31/wdt:P279* wd:Q507619.
   {
@@ -118,6 +205,7 @@ WHERE {
     ?item wdt:P159/wdt:P17 wd:Q142.
   }
   OPTIONAL { ?item wdt:P154 ?logo. }
+  OPTIONAL { ?item wdt:P856 ?website. }
   SERVICE wikibase:label { bd:serviceParam wikibase:language "fr,en". }
 }
 LIMIT 800
@@ -173,10 +261,11 @@ LIMIT 800
         continue;
       }
 
+      final String? logoUrl = _toLogoUrl(_bindingValue(row, 'logo'));
       dedup[key] = StoreBrand(
         id: id,
         name: cleanLabel,
-        logoUrl: _toLogoUrl(_bindingValue(row, 'logo')),
+        logoUrl: logoUrl ?? _toWebsiteLogoUrl(_bindingValue(row, 'website')),
       );
     }
 
@@ -216,6 +305,108 @@ LIMIT 800
     }
 
     return 'https://commons.wikimedia.org/wiki/Special:FilePath/${Uri.encodeComponent(fileName)}';
+  }
+
+  static String? _toWebsiteLogoUrl(String? raw) {
+    if (raw == null || raw.trim().isEmpty) {
+      return null;
+    }
+
+    final String website = raw.trim();
+    Uri? parsed = Uri.tryParse(website);
+    if (parsed == null || parsed.host.isEmpty) {
+      parsed = Uri.tryParse('https://$website');
+    }
+
+    if (parsed == null || parsed.host.isEmpty) {
+      return null;
+    }
+
+    String domain = parsed.host.toLowerCase();
+    if (domain.startsWith('www.')) {
+      domain = domain.substring(4);
+    }
+    if (domain.isEmpty) {
+      return null;
+    }
+
+    return 'https://www.google.com/s2/favicons?sz=128&domain=${Uri.encodeComponent(domain)}';
+  }
+
+  Future<Map<String, Map<String, String?>>> _fetchBrandMediaById(
+    List<String> ids,
+  ) async {
+    if (ids.isEmpty) {
+      return <String, Map<String, String?>>{};
+    }
+
+    final String values = ids.map((String id) => 'wd:$id').join(' ');
+    final String query =
+        '''
+SELECT ?item ?logo ?website
+WHERE {
+  VALUES ?item { $values }
+  OPTIONAL { ?item wdt:P154 ?logo. }
+  OPTIONAL { ?item wdt:P856 ?website. }
+}
+''';
+
+    try {
+      final Uri uri = Uri.https(
+        'query.wikidata.org',
+        '/sparql',
+        <String, String>{'format': 'json', 'query': query},
+      );
+
+      final http.Response response = await _client
+          .get(
+            uri,
+            headers: <String, String>{
+              'Accept': 'application/sparql-results+json',
+              'User-Agent': 'loyalty_card/1.0 (flutter-app)',
+            },
+          )
+          .timeout(const Duration(seconds: 10));
+
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        return <String, Map<String, String?>>{};
+      }
+
+      final Map<String, dynamic> decoded =
+          jsonDecode(response.body) as Map<String, dynamic>;
+      final List<dynamic> bindings =
+          ((decoded['results'] as Map<String, dynamic>)['bindings']
+              as List<dynamic>?) ??
+          <dynamic>[];
+
+      final Map<String, Map<String, String?>> result =
+          <String, Map<String, String?>>{};
+
+      for (final dynamic rowDynamic in bindings) {
+        final Map<String, dynamic> row = Map<String, dynamic>.from(
+          rowDynamic as Map<dynamic, dynamic>,
+        );
+
+        final String? item = _bindingValue(row, 'item');
+        if (item == null || item.isEmpty) {
+          continue;
+        }
+
+        final String id = item.split('/').last;
+        final Map<String, String?> entry =
+            result[id] ?? <String, String?>{'logoUrl': null, 'website': null};
+
+        entry['logoUrl'] =
+            entry['logoUrl'] ?? _toLogoUrl(_bindingValue(row, 'logo'));
+        entry['website'] = entry['website'] ?? _bindingValue(row, 'website');
+
+        result[id] = entry;
+      }
+
+      return result;
+    } catch (_) {
+      return <String, Map<String, String?>>{};
+    }
   }
 }
 
@@ -867,9 +1058,12 @@ class _BrandSelectionPageState extends State<BrandSelectionPage> {
   final BrandRepository _brandRepository = BrandRepository.instance;
 
   List<StoreBrand> _brands = <StoreBrand>[];
+  List<StoreBrand> _remoteBrands = <StoreBrand>[];
   String _search = '';
   bool _isLoading = true;
+  bool _isSearching = false;
   String? _errorMessage;
+  Timer? _searchDebounce;
 
   @override
   void initState() {
@@ -879,6 +1073,7 @@ class _BrandSelectionPageState extends State<BrandSelectionPage> {
 
   @override
   void dispose() {
+    _searchDebounce?.cancel();
     _searchController.dispose();
     super.dispose();
   }
@@ -901,7 +1096,10 @@ class _BrandSelectionPageState extends State<BrandSelectionPage> {
       setState(() {
         _brands = brands;
         _isLoading = false;
+        _remoteBrands = <StoreBrand>[];
       });
+
+      _triggerRemoteSearch();
     } catch (_) {
       if (!mounted) {
         return;
@@ -918,9 +1116,26 @@ class _BrandSelectionPageState extends State<BrandSelectionPage> {
   @override
   Widget build(BuildContext context) {
     final String query = _search.trim().toLowerCase();
-    final List<StoreBrand> filtered = _brands
+    final List<StoreBrand> localFiltered = _brands
         .where((StoreBrand b) => b.name.toLowerCase().contains(query))
         .toList();
+
+    final Map<String, StoreBrand> merged = <String, StoreBrand>{};
+    for (final StoreBrand brand in localFiltered) {
+      merged[brand.name.toLowerCase()] = brand;
+    }
+    for (final StoreBrand brand in _remoteBrands) {
+      merged.putIfAbsent(brand.name.toLowerCase(), () => brand);
+    }
+
+    final List<StoreBrand> filtered = merged.values.toList()
+      ..sort(
+        (StoreBrand a, StoreBrand b) =>
+            a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+      );
+
+    final String manualName = _search.trim();
+    final bool showManualOption = manualName.isNotEmpty;
 
     Widget content;
     if (_isLoading && _brands.isEmpty) {
@@ -939,14 +1154,27 @@ class _BrandSelectionPageState extends State<BrandSelectionPage> {
           ],
         ),
       );
-    } else if (filtered.isEmpty) {
+    } else if (filtered.isEmpty && !showManualOption) {
       content = const Center(child: Text('Aucune enseigne trouvee'));
     } else {
       content = ListView.separated(
-        itemCount: filtered.length,
+        itemCount: filtered.length + (showManualOption ? 1 : 0),
         separatorBuilder: (_, _) => const SizedBox(height: 8),
         itemBuilder: (BuildContext context, int index) {
-          final StoreBrand brand = filtered[index];
+          if (showManualOption && index == 0) {
+            return Card(
+              child: ListTile(
+                leading: const Icon(Icons.add_business_outlined),
+                title: Text('Ajouter "$manualName"'),
+                subtitle: const Text('Creer une enseigne manuellement'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => Navigator.of(context).pop(_manualBrandFromQuery()),
+              ),
+            );
+          }
+
+          final int adjustedIndex = showManualOption ? index - 1 : index;
+          final StoreBrand brand = filtered[adjustedIndex];
           return Card(
             child: ListTile(
               leading: _BrandAvatar(name: brand.name, logoUrl: brand.logoUrl),
@@ -975,17 +1203,88 @@ class _BrandSelectionPageState extends State<BrandSelectionPage> {
           children: <Widget>[
             TextField(
               controller: _searchController,
-              onChanged: (String value) => setState(() => _search = value),
+              onChanged: (String value) {
+                setState(() => _search = value);
+                _triggerRemoteSearch();
+              },
               decoration: const InputDecoration(
                 hintText: 'Rechercher une enseigne',
                 prefixIcon: Icon(Icons.search),
               ),
             ),
+            const SizedBox(height: 6),
+            if (_isSearching)
+              const LinearProgressIndicator(minHeight: 2)
+            else
+              const SizedBox(height: 2),
             const SizedBox(height: 12),
             Expanded(child: content),
           ],
         ),
       ),
+    );
+  }
+
+  void _triggerRemoteSearch() {
+    _searchDebounce?.cancel();
+    final String query = _search.trim();
+
+    if (query.length < 2) {
+      if (_remoteBrands.isNotEmpty || _isSearching) {
+        setState(() {
+          _remoteBrands = <StoreBrand>[];
+          _isSearching = false;
+        });
+      }
+      return;
+    }
+
+    _searchDebounce = Timer(const Duration(milliseconds: 300), () async {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _isSearching = true;
+      });
+
+      try {
+        final List<StoreBrand> remote = await _brandRepository.searchBrands(
+          query,
+        );
+        if (!mounted || query != _search.trim()) {
+          return;
+        }
+
+        setState(() {
+          _remoteBrands = remote;
+          _isSearching = false;
+        });
+      } catch (_) {
+        if (!mounted || query != _search.trim()) {
+          return;
+        }
+
+        setState(() {
+          _remoteBrands = <StoreBrand>[];
+          _isSearching = false;
+        });
+      }
+    });
+  }
+
+  StoreBrand _manualBrandFromQuery() {
+    final String name = _search.trim();
+    final String slug = name
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9]+'), '-')
+        .replaceAll(RegExp(r'^-+|-+$'), '');
+    final String fallback = DateTime.now().millisecondsSinceEpoch.toString();
+
+    return StoreBrand(
+      id: 'manual:${slug.isEmpty ? fallback : slug}',
+      name: name,
+      logoUrl: null,
     );
   }
 }
@@ -1315,21 +1614,27 @@ class _CardDetailPageState extends State<CardDetailPage> {
               Expanded(
                 child: Center(
                   child: Card(
+                    color: Colors.white,
+                    surfaceTintColor: Colors.white,
                     child: Padding(
                       padding: const EdgeInsets.all(22),
-                      child: BarcodeWidget(
-                        barcode: card.codeType == CardCodeType.qr
-                            ? Barcode.qrCode()
-                            : Barcode.code128(),
-                        data: card.cardNumber,
-                        drawText: false,
-                        width: double.infinity,
-                        height: 240,
-                        errorBuilder: (BuildContext context, String error) {
-                          return const Center(
-                            child: Text('Numero invalide pour ce format'),
-                          );
-                        },
+                      child: Container(
+                        color: Colors.white,
+                        padding: const EdgeInsets.all(8),
+                        child: BarcodeWidget(
+                          barcode: card.codeType == CardCodeType.qr
+                              ? Barcode.qrCode()
+                              : Barcode.code128(),
+                          data: card.cardNumber,
+                          drawText: false,
+                          width: double.infinity,
+                          height: card.codeType == CardCodeType.qr ? 240 : 120,
+                          errorBuilder: (BuildContext context, String error) {
+                            return const Center(
+                              child: Text('Numero invalide pour ce format'),
+                            );
+                          },
+                        ),
                       ),
                     ),
                   ),
