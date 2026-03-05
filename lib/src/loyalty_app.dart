@@ -1128,6 +1128,21 @@ class _HomePageState extends State<HomePage> {
           Icons.search_rounded,
           color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.4),
         ),
+        suffixIcon: _searchController.text.isNotEmpty
+            ? IconButton(
+                icon: Icon(
+                  Icons.clear_rounded,
+                  color: Theme.of(context)
+                      .colorScheme
+                      .onSurface
+                      .withValues(alpha: 0.4),
+                ),
+                onPressed: () {
+                  _searchController.clear();
+                  state.setSearchQuery('');
+                },
+              )
+            : null,
         filled: true,
         fillColor: Theme.of(context).cardTheme.color,
         border: OutlineInputBorder(
