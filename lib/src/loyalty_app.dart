@@ -846,7 +846,7 @@ class LoyaltyApp extends StatelessWidget {
             themeMode: state.themeMode,
             theme: _buildTheme(Brightness.light),
             darkTheme: _buildTheme(Brightness.dark),
-            home: const HomePage(),
+            home: const MainScreen(),
           );
         },
       ),
@@ -856,7 +856,7 @@ class LoyaltyApp extends StatelessWidget {
   ThemeData _buildTheme(Brightness brightness) {
     final bool isDark = brightness == Brightness.dark;
     final ColorScheme scheme = ColorScheme.fromSeed(
-      seedColor: const Color(0xFF123B6D),
+      seedColor: const Color(0xFF2B5CFA),
       brightness: brightness,
     );
 
@@ -869,8 +869,8 @@ class LoyaltyApp extends StatelessWidget {
       brightness: brightness,
       useMaterial3: true,
       scaffoldBackgroundColor: isDark
-          ? const Color(0xFF071221)
-          : const Color(0xFFF5F7FB),
+          ? const Color(0xFF0F172A)
+          : const Color(0xFFF6F8FD),
       textTheme: baseText,
       appBarTheme: AppBarTheme(
         centerTitle: false,
@@ -894,6 +894,122 @@ class LoyaltyApp extends StatelessWidget {
   }
 }
 
+class MainScreen extends StatefulWidget {
+  const MainScreen({super.key});
+
+  @override
+  State<MainScreen> createState() => _MainScreenState();
+}
+
+class _MainScreenState extends State<MainScreen> {
+  int _currentIndex = 0;
+
+  final List<Widget> _pages = <Widget>[
+    const HomePage(),
+    const CardsPage(),
+    const Center(child: Text('Offers')),
+    const SettingsPage(),
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    final bool isDark = Theme.of(context).brightness == Brightness.dark;
+
+    return Scaffold(
+      extendBody: true,
+      body: _pages[_currentIndex],
+      floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
+      floatingActionButton: FloatingActionButton(
+        shape: const CircleBorder(),
+        backgroundColor: const Color(0xFF2B5CFA),
+        foregroundColor: Colors.white,
+        elevation: 4,
+        onPressed: () => _addCardFlow(context),
+        child: const Icon(Icons.add, size: 32),
+      ),
+      bottomNavigationBar: BottomAppBar(
+        shape: const CircularNotchedRectangle(),
+        notchMargin: 10,
+        color: isDark ? const Color(0xFF1E293B) : Colors.white,
+        surfaceTintColor: Colors.transparent,
+        child: SizedBox(
+          height: 60,
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceAround,
+            children: <Widget>[
+              _buildTabIcon(icon: Icons.home_rounded, label: 'HOME', index: 0),
+              _buildTabIcon(
+                icon: Icons.credit_card_rounded,
+                label: 'CARDS',
+                index: 1,
+              ),
+              const SizedBox(width: 48), // Space for FAB
+              _buildTabIcon(
+                icon: Icons.local_offer_rounded,
+                label: 'OFFERS',
+                index: 2,
+              ),
+              _buildTabIcon(
+                icon: Icons.person_rounded,
+                label: 'PROFILE',
+                index: 3,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTabIcon({
+    required IconData icon,
+    required String label,
+    required int index,
+  }) {
+    final bool isSelected = _currentIndex == index;
+    final Color color = isSelected
+        ? const Color(0xFF2B5CFA)
+        : Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.4);
+
+    return InkWell(
+      onTap: () => setState(() => _currentIndex = index),
+      customBorder: const CircleBorder(),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: <Widget>[
+          Icon(icon, color: color, size: 26),
+          const SizedBox(height: 4),
+          Text(
+            label,
+            style: TextStyle(
+              color: color,
+              fontSize: 10,
+              fontWeight: isSelected ? FontWeight.w800 : FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _addCardFlow(BuildContext context) async {
+    final StoreBrand? brand = await Navigator.of(context).push<StoreBrand>(
+      MaterialPageRoute<StoreBrand>(builder: (_) => const BrandSelectionPage()),
+    );
+
+    if (!context.mounted || brand == null) {
+      return;
+    }
+
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => CardFormPage(brand: brand, cardToEdit: null),
+      ),
+    );
+  }
+}
+
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
 
@@ -902,6 +1018,376 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
+  final TextEditingController _searchController = TextEditingController();
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+          children: <Widget>[
+            _buildHeader(),
+            const SizedBox(height: 24),
+            _buildSearchBar(),
+            const SizedBox(height: 32),
+            _buildMostUsedSection(context),
+            const SizedBox(height: 32),
+            _buildNearbyOffersSection(context),
+            const SizedBox(height: 80), // Fab space padding
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHeader() {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: <Widget>[
+        Row(
+          children: <Widget>[
+            CircleAvatar(
+              radius: 22,
+              backgroundColor: Colors.orange.shade100,
+              backgroundImage: const NetworkImage(
+                'https://api.dicebear.com/7.x/open-peeps/png?seed=Felix&backgroundColor=ffdfbf',
+              ),
+            ),
+            const SizedBox(width: 12),
+            const Text(
+              'My Wallet',
+              style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800),
+            ),
+          ],
+        ),
+        Container(
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.05),
+            shape: BoxShape.circle,
+          ),
+          child: const Icon(Icons.notifications_none_rounded),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSearchBar() {
+    return TextField(
+      controller: _searchController,
+      decoration: InputDecoration(
+        hintText: 'Search cards, brands, or offe...',
+        hintStyle: TextStyle(
+          color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.4),
+          fontWeight: FontWeight.w500,
+        ),
+        prefixIcon: Icon(
+          Icons.search_rounded,
+          color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.4),
+        ),
+        filled: true,
+        fillColor: Theme.of(context).cardTheme.color,
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(16),
+          borderSide: BorderSide.none,
+        ),
+        contentPadding: const EdgeInsets.symmetric(vertical: 18),
+      ),
+    );
+  }
+
+  Widget _buildMostUsedSection(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: <Widget>[
+            const Text(
+              'Most Used Cards',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+            ),
+            Text(
+              'View All',
+              style: TextStyle(
+                color: const Color(0xFF2B5CFA),
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        Container(
+          width: double.infinity,
+          height: 200,
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              colors: [Color(0xFF1A8C4A), Color(0xFF0F602F)],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            borderRadius: BorderRadius.circular(24),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xFF1A8C4A).withValues(alpha: 0.3),
+                blurRadius: 16,
+                offset: const Offset(0, 8),
+              ),
+            ],
+          ),
+          padding: const EdgeInsets.all(24),
+          child: Stack(
+            children: <Widget>[
+              // Logo
+              Positioned(
+                top: 0,
+                left: 0,
+                child: Container(
+                  padding: const EdgeInsets.all(4),
+                  decoration: const BoxDecoration(
+                    color: Colors.white,
+                    shape: BoxShape.circle,
+                  ),
+                  child: CircleAvatar(
+                    radius: 20,
+                    backgroundColor: Colors.white,
+                    backgroundImage: const NetworkImage(
+                      'https://upload.wikimedia.org/wikipedia/en/thumb/d/d3/Starbucks_Corporation_Logo_2011.svg/1200px-Starbucks_Corporation_Logo_2011.svg.png',
+                    ),
+                  ),
+                ),
+              ),
+              // Stars
+              Positioned(
+                bottom: 0,
+                left: 0,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: const <Widget>[
+                    Text(
+                      'GOLD MEMBER',
+                      style: TextStyle(
+                        color: Colors.white70,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 1.2,
+                        fontSize: 11,
+                      ),
+                    ),
+                    SizedBox(height: 4),
+                    Text(
+                      '1,240 Stars',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w800,
+                        fontSize: 24,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              // NFC Icon
+              Positioned(
+                bottom: 0,
+                right: 0,
+                child: Icon(
+                  Icons.contactless_outlined,
+                  color: Colors.white.withValues(alpha: 0.8),
+                  size: 32,
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        const Text(
+          'Starbucks Coffee',
+          style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildNearbyOffersSection(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: <Widget>[
+            const Text(
+              'Nearby Offers',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+            ),
+            Row(
+              children: <Widget>[
+                const Icon(
+                  Icons.location_on_outlined,
+                  color: Color(0xFF2B5CFA),
+                  size: 16,
+                ),
+                const SizedBox(width: 4),
+                const Text(
+                  'New York, NY',
+                  style: TextStyle(
+                    color: Color(0xFF2B5CFA),
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        _OfferCard(
+          brandName: 'Whole Foods Market',
+          distance: '0.4 miles away',
+          description: 'Get 15% back on all organic produce this week.',
+          badgeText: '15%\nOFF',
+          imageUrl:
+              'https://images.unsplash.com/photo-1542838132-92c53300491e?auto=format&fit=crop&q=80&w=200&h=200',
+        ),
+        const SizedBox(height: 12),
+        _OfferCard(
+          brandName: 'Blue Bottle',
+          distance: '0.8 miles away',
+          description: 'Free pastry with any large coffee purchase.',
+          badgeText: 'FREE\nITEM',
+          imageUrl:
+              'https://images.unsplash.com/photo-1554118811-1e0d58224f24?auto=format&fit=crop&q=80&w=200&h=200',
+        ),
+      ],
+    );
+  }
+}
+
+class _OfferCard extends StatelessWidget {
+  const _OfferCard({
+    required this.brandName,
+    required this.distance,
+    required this.description,
+    required this.badgeText,
+    required this.imageUrl,
+  });
+
+  final String brandName;
+  final String distance;
+  final String description;
+  final String badgeText;
+  final String imageUrl;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: Theme.of(context).cardTheme.color,
+        borderRadius: BorderRadius.circular(20),
+      ),
+      padding: const EdgeInsets.all(16),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          // Image
+          ClipRRect(
+            borderRadius: BorderRadius.circular(12),
+            child: Image.network(
+              imageUrl,
+              width: 80,
+              height: 80,
+              fit: BoxFit.cover,
+            ),
+          ),
+          const SizedBox(width: 16),
+          // Content
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: <Widget>[
+                          Text(
+                            brandName,
+                            style: const TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w800,
+                              height: 1.2,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            distance,
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Theme.of(
+                                context,
+                              ).colorScheme.onSurface.withValues(alpha: 0.5),
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 6,
+                      ),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF2B5CFA).withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Text(
+                        badgeText,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          color: Color(0xFF2B5CFA),
+                          fontSize: 10,
+                          fontWeight: FontWeight.w800,
+                          height: 1.2,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  description,
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: Theme.of(
+                      context,
+                    ).colorScheme.onSurface.withValues(alpha: 0.7),
+                    height: 1.4,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class CardsPage extends StatefulWidget {
+  const CardsPage({super.key});
+
+  @override
+  State<CardsPage> createState() => _CardsPageState();
+}
+
+class _CardsPageState extends State<CardsPage> {
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _searchFocusNode = FocusNode();
 
@@ -939,10 +1425,6 @@ class _HomePageState extends State<HomePage> {
                 icon: const Icon(Icons.settings_outlined),
               ),
             ],
-          ),
-          floatingActionButton: FloatingActionButton(
-            onPressed: () => _addCardFlow(context),
-            child: const Icon(Icons.add),
           ),
           body: SafeArea(
             child: Padding(
@@ -1040,31 +1522,6 @@ class _HomePageState extends State<HomePage> {
         );
       },
     );
-  }
-
-  Future<void> _addCardFlow(BuildContext context) async {
-    _searchFocusNode.unfocus();
-    FocusManager.instance.primaryFocus?.unfocus();
-
-    final StoreBrand? brand = await Navigator.of(context).push<StoreBrand>(
-      MaterialPageRoute<StoreBrand>(builder: (_) => const BrandSelectionPage()),
-    );
-
-    if (!context.mounted || brand == null) {
-      _searchFocusNode.unfocus();
-      return;
-    }
-
-    await Navigator.of(context).push<void>(
-      MaterialPageRoute<void>(
-        builder: (_) => CardFormPage(brand: brand, cardToEdit: null),
-      ),
-    );
-
-    if (context.mounted) {
-      _searchFocusNode.unfocus();
-      FocusManager.instance.primaryFocus?.unfocus();
-    }
   }
 }
 
