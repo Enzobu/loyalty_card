@@ -1192,6 +1192,7 @@ class ModernCardWidget extends StatelessWidget {
         );
       },
       child: Container(
+        height: 200,
         decoration: BoxDecoration(
           gradient: LinearGradient(
             colors: gradientColors,
