@@ -930,8 +930,6 @@ class _MainScreenState extends State<MainScreen> {
 
   final List<Widget> _pages = <Widget>[
     const HomePage(),
-    const CardsPage(),
-    const Center(child: Text('Offers')),
     const SettingsPage(),
   ];
 
@@ -940,45 +938,46 @@ class _MainScreenState extends State<MainScreen> {
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
 
     return Scaffold(
-      extendBody: true,
       body: _pages[_currentIndex],
-      floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
-      floatingActionButton: FloatingActionButton(
-        shape: const CircleBorder(),
-        backgroundColor: const Color(0xFF2B5CFA),
-        foregroundColor: Colors.white,
-        elevation: 4,
-        onPressed: () => _addCardFlow(context),
-        child: const Icon(Icons.add, size: 32),
-      ),
       bottomNavigationBar: BottomAppBar(
-        shape: const CircularNotchedRectangle(),
-        notchMargin: 10,
         color: isDark ? const Color(0xFF1E293B) : Colors.white,
+        elevation: 8,
         surfaceTintColor: Colors.transparent,
+        padding: EdgeInsets.zero,
         child: SizedBox(
           height: 60,
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceAround,
             children: <Widget>[
               _buildTabIcon(icon: Icons.home_rounded, label: 'HOME', index: 0),
-              _buildTabIcon(
-                icon: Icons.credit_card_rounded,
-                label: 'CARDS',
-                index: 1,
-              ),
-              const SizedBox(width: 48), // Space for FAB
-              _buildTabIcon(
-                icon: Icons.local_offer_rounded,
-                label: 'OFFERS',
-                index: 2,
-              ),
+              _buildAddButton(context),
               _buildTabIcon(
                 icon: Icons.person_rounded,
                 label: 'PROFILE',
-                index: 3,
+                index: 1,
               ),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAddButton(BuildContext context) {
+    return GestureDetector(
+      onTap: () => _addCardFlow(context),
+      child: Material(
+        color: const Color(0xFF2B5CFA),
+        shape: const CircleBorder(),
+        clipBehavior: Clip.antiAliasWithSaveLayer,
+        elevation: 4,
+        shadowColor: const Color(0x4D2B5CFA),
+        child: const Padding(
+          padding: EdgeInsets.all(12),
+          child: Icon(
+            Icons.add,
+            color: Colors.white,
+            size: 28,
           ),
         ),
       ),
@@ -1042,7 +1041,15 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  final TextEditingController _searchController = TextEditingController();
+  late final TextEditingController _searchController;
+
+  @override
+  void initState() {
+    super.initState();
+    _searchController = TextEditingController(
+      text: context.read<AppState>().searchQuery,
+    );
+  }
 
   @override
   void dispose() {
@@ -1061,9 +1068,9 @@ class _HomePageState extends State<HomePage> {
               children: <Widget>[
                 _buildHeader(),
                 const SizedBox(height: 24),
-                _buildSearchBar(),
+                _buildSearchBar(state),
                 const SizedBox(height: 32),
-                _buildMostUsedSection(context, state),
+                ..._buildCardList(state),
                 const SizedBox(height: 80),
               ],
             ),
@@ -1107,9 +1114,10 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  Widget _buildSearchBar() {
+  Widget _buildSearchBar(AppState state) {
     return TextField(
       controller: _searchController,
+      onChanged: state.setSearchQuery,
       decoration: InputDecoration(
         hintText: 'Search cards, brands, or offe...',
         hintStyle: TextStyle(
@@ -1131,9 +1139,9 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  Widget _buildMostUsedSection(BuildContext context, AppState state) {
+  List<Widget> _buildCardList(AppState state) {
     if (!state.isLoaded || state.filteredCards.isEmpty) {
-      return const SizedBox.shrink();
+      return <Widget>[];
     }
 
     final List<LoyaltyCardModel> sortedCards =
@@ -1142,31 +1150,12 @@ class _HomePageState extends State<HomePage> {
               b.clickCount.compareTo(a.clickCount),
         );
 
-    final List<LoyaltyCardModel> topCards = sortedCards.take(3).toList();
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: <Widget>[
-        const Text(
-          'Mes cartes les plus utilisées',
-          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
-        ),
-        const SizedBox(height: 16),
-        SizedBox(
-          height: 220,
-          child: ListView.separated(
-            scrollDirection: Axis.horizontal,
-            itemCount: topCards.length,
-            separatorBuilder: (BuildContext context, int index) =>
-                const SizedBox(width: 16),
-            itemBuilder: (BuildContext context, int index) {
-              final LoyaltyCardModel card = topCards[index];
-              return SizedBox(width: 300, child: ModernCardWidget(card: card));
-            },
-          ),
-        ),
-      ],
-    );
+    return sortedCards.map((LoyaltyCardModel card) {
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 16),
+        child: ModernCardWidget(card: card),
+      );
+    }).toList();
   }
 }
 
@@ -1178,9 +1167,29 @@ class ModernCardWidget extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
-    final List<Color> gradientColors = isDark
-        ? const <Color>[Color(0xFF2C3E50), Color(0xFF000000)]
-        : const <Color>[Color(0xFF2B5CFA), Color(0xFF0F2027)];
+
+    // Génération d'une couleur déterministe basée sur l'ID
+    final int hash = card.id.hashCode;
+    final double hue = (hash % 360).toDouble();
+
+    // Couleur de base (H, S, L)
+    // On sature un peu plus en mode sombre pour que ça "pop"
+    final Color baseColor = HSLColor.fromAHSL(
+      1.0,
+      hue,
+      isDark ? 0.65 : 0.75,
+      isDark ? 0.35 : 0.45,
+    ).toColor();
+
+    // Couleur foncée pour le dégradé
+    final Color darkColor = HSLColor.fromAHSL(
+      1.0,
+      hue,
+      isDark ? 0.8 : 0.9,
+      isDark ? 0.15 : 0.25,
+    ).toColor();
+
+    final List<Color> gradientColors = <Color>[baseColor, darkColor];
 
     return GestureDetector(
       onTap: () {
@@ -1217,25 +1226,27 @@ class ModernCardWidget extends StatelessWidget {
               left: 0,
               child: Container(
                 padding: const EdgeInsets.all(4),
+                clipBehavior: Clip.antiAlias,
                 decoration: const BoxDecoration(
                   color: Colors.white,
                   shape: BoxShape.circle,
                 ),
-                child: CircleAvatar(
-                  radius: 20,
-                  backgroundColor: Colors.white,
-                  backgroundImage: card.brandLogoUrl != null
-                      ? NetworkImage(card.brandLogoUrl!)
-                      : null,
-                  child: card.brandLogoUrl == null
-                      ? Text(
-                          card.brandName[0].toUpperCase(),
-                          style: const TextStyle(
-                            color: Colors.black,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        )
-                      : null,
+                child: SizedBox(
+                  width: 40,
+                  height: 40,
+                  child: Center(
+                    child: (card.brandLogoUrl != null &&
+                            card.brandLogoUrl!.isNotEmpty)
+                        ? Image.network(
+                            card.brandLogoUrl!,
+                            fit: BoxFit.contain,
+                            errorBuilder: (BuildContext context, Object error,
+                                StackTrace? stackTrace) {
+                              return _buildFallbackLetter();
+                            },
+                          )
+                        : _buildFallbackLetter(),
+                  ),
                 ),
               ),
             ),
@@ -1294,162 +1305,16 @@ class ModernCardWidget extends StatelessWidget {
       ),
     );
   }
-}
-
-class CardsPage extends StatefulWidget {
-  const CardsPage({super.key});
-
-  @override
-  State<CardsPage> createState() => _CardsPageState();
-}
-
-class _CardsPageState extends State<CardsPage> {
-  final TextEditingController _searchController = TextEditingController();
-  final FocusNode _searchFocusNode = FocusNode();
-
-  @override
-  void dispose() {
-    _searchFocusNode.dispose();
-    _searchController.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Consumer<AppState>(
-      builder: (BuildContext context, AppState state, Widget? child) {
-        if (!state.isLoaded) {
-          return const Scaffold(
-            body: Center(child: CircularProgressIndicator()),
-          );
-        }
-
-        final List<LoyaltyCardModel> cards = state.filteredCards;
-
-        return Scaffold(
-          appBar: AppBar(
-            title: const Text(
-              'Mes cartes',
-              style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800),
-            ),
-            backgroundColor: Colors.transparent,
-            actions: <Widget>[
-              IconButton(
-                onPressed: () {
-                  Navigator.of(context).push(
-                    MaterialPageRoute<void>(
-                      builder: (_) => const SettingsPage(),
-                    ),
-                  );
-                },
-                icon: const Icon(Icons.settings_outlined),
-              ),
-            ],
-          ),
-          body: SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-              child: Column(
-                children: <Widget>[
-                  Row(
-                    children: <Widget>[
-                      Expanded(
-                        child: TextField(
-                          controller: _searchController,
-                          focusNode: _searchFocusNode,
-                          textCapitalization: TextCapitalization.words,
-                          onChanged: state.setSearchQuery,
-                          decoration: InputDecoration(
-                            hintText: 'Rechercher une carte',
-                            hintStyle: TextStyle(
-                              color: Theme.of(
-                                context,
-                              ).colorScheme.onSurface.withValues(alpha: 0.4),
-                              fontWeight: FontWeight.w500,
-                            ),
-                            prefixIcon: Icon(
-                              Icons.search_rounded,
-                              color: Theme.of(
-                                context,
-                              ).colorScheme.onSurface.withValues(alpha: 0.4),
-                            ),
-                            filled: true,
-                            fillColor: Theme.of(context).cardTheme.color,
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(16),
-                              borderSide: BorderSide.none,
-                            ),
-                            contentPadding: const EdgeInsets.symmetric(
-                              vertical: 18,
-                            ),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 12),
-                        decoration: BoxDecoration(
-                          color: Theme.of(context).cardTheme.color,
-                          borderRadius: BorderRadius.circular(16),
-                        ),
-                        child: DropdownButtonHideUnderline(
-                          child: DropdownButton<CardSortMode>(
-                            value: state.sortMode,
-                            items: const <DropdownMenuItem<CardSortMode>>[
-                              DropdownMenuItem<CardSortMode>(
-                                value: CardSortMode.alphabetical,
-                                child: Text('A-Z'),
-                              ),
-                              DropdownMenuItem<CardSortMode>(
-                                value: CardSortMode.custom,
-                                child: Text('Custom'),
-                              ),
-                            ],
-                            onChanged: (CardSortMode? mode) {
-                              if (mode != null) {
-                                unawaited(state.setSortMode(mode));
-                              }
-                            },
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 14),
-                  Expanded(
-                    child: cards.isEmpty
-                        ? const _EmptyState()
-                        : state.sortMode == CardSortMode.custom
-                        ? ReorderableListView.builder(
-                            itemCount: cards.length,
-                            onReorder: state.reorderCustom,
-                            padding: const EdgeInsets.only(bottom: 24),
-                            itemBuilder: (BuildContext context, int index) {
-                              final LoyaltyCardModel card = cards[index];
-                              return Padding(
-                                key: ValueKey<String>(card.id),
-                                padding: const EdgeInsets.only(bottom: 16),
-                                child: ModernCardWidget(card: card),
-                              );
-                            },
-                          )
-                        : ListView.separated(
-                            itemCount: cards.length,
-                            padding: const EdgeInsets.only(bottom: 24),
-                            separatorBuilder:
-                                (BuildContext context, int index) =>
-                                    const SizedBox(height: 16),
-                            itemBuilder: (BuildContext context, int index) {
-                              return ModernCardWidget(card: cards[index]);
-                            },
-                          ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        );
-      },
+  Widget _buildFallbackLetter() {
+    final String letter =
+        card.brandName.isEmpty ? '?' : card.brandName[0].toUpperCase();
+    return Text(
+      letter,
+      style: const TextStyle(
+        color: Colors.black,
+        fontWeight: FontWeight.bold,
+        fontSize: 16,
+      ),
     );
   }
 }
@@ -1505,48 +1370,6 @@ class _BrandAvatar extends StatelessWidget {
   }
 }
 
-class _EmptyState extends StatelessWidget {
-  const _EmptyState();
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: <Widget>[
-          Container(
-            padding: const EdgeInsets.all(24),
-            decoration: BoxDecoration(
-              color: Theme.of(
-                context,
-              ).colorScheme.primary.withValues(alpha: 0.1),
-              shape: BoxShape.circle,
-            ),
-            child: Icon(
-              Icons.wallet_rounded,
-              size: 48,
-              color: Theme.of(context).colorScheme.primary,
-            ),
-          ),
-          const SizedBox(height: 24),
-          const Text(
-            'Aucune carte',
-            style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'Ajoute ta première carte avec le bouton +',
-            style: TextStyle(
-              color: Theme.of(
-                context,
-              ).colorScheme.onSurface.withValues(alpha: 0.6),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
 
 class BrandSelectionPage extends StatefulWidget {
   const BrandSelectionPage({super.key});
