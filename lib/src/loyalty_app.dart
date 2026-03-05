@@ -3,8 +3,10 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:barcode_widget/barcode_widget.dart';
+import 'package:diacritic/diacritic.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
 import 'package:mobile_scanner/mobile_scanner.dart' as ms;
@@ -20,6 +22,11 @@ enum CardCodeType { barcode, qr }
 enum CardSortMode { alphabetical, custom }
 
 enum AppThemePreference { system, light, dark }
+
+String _normalizeSearchText(String value) {
+  final String withoutAccents = removeDiacritics(value).toLowerCase().trim();
+  return withoutAccents.replaceAll(RegExp(r'[^a-z0-9]+'), '');
+}
 
 class StoreBrand {
   const StoreBrand({required this.id, required this.name, this.logoUrl});
@@ -522,13 +529,13 @@ class AppState extends ChangeNotifier {
   }
 
   List<LoyaltyCardModel> get filteredCards {
-    final String normalizedQuery = _searchQuery.trim().toLowerCase();
+    final String normalizedQuery = _normalizeSearchText(_searchQuery);
     final List<LoyaltyCardModel> list = _cards.where((LoyaltyCardModel card) {
       if (normalizedQuery.isEmpty) {
         return true;
       }
-      return card.brandName.toLowerCase().contains(normalizedQuery) ||
-          card.cardNumber.toLowerCase().contains(normalizedQuery);
+      return _normalizeSearchText(card.brandName).contains(normalizedQuery) ||
+          _normalizeSearchText(card.cardNumber).contains(normalizedQuery);
     }).toList();
 
     if (_sortMode == CardSortMode.alphabetical) {
@@ -896,9 +903,11 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   final TextEditingController _searchController = TextEditingController();
+  final FocusNode _searchFocusNode = FocusNode();
 
   @override
   void dispose() {
+    _searchFocusNode.dispose();
     _searchController.dispose();
     super.dispose();
   }
@@ -945,6 +954,8 @@ class _HomePageState extends State<HomePage> {
                       Expanded(
                         child: TextField(
                           controller: _searchController,
+                          focusNode: _searchFocusNode,
+                          textCapitalization: TextCapitalization.words,
                           onChanged: state.setSearchQuery,
                           decoration: const InputDecoration(
                             hintText: 'Rechercher une carte',
@@ -1032,11 +1043,15 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _addCardFlow(BuildContext context) async {
+    _searchFocusNode.unfocus();
+    FocusManager.instance.primaryFocus?.unfocus();
+
     final StoreBrand? brand = await Navigator.of(context).push<StoreBrand>(
       MaterialPageRoute<StoreBrand>(builder: (_) => const BrandSelectionPage()),
     );
 
     if (!context.mounted || brand == null) {
+      _searchFocusNode.unfocus();
       return;
     }
 
@@ -1045,6 +1060,11 @@ class _HomePageState extends State<HomePage> {
         builder: (_) => CardFormPage(brand: brand, cardToEdit: null),
       ),
     );
+
+    if (context.mounted) {
+      _searchFocusNode.unfocus();
+      FocusManager.instance.primaryFocus?.unfocus();
+    }
   }
 }
 
@@ -1199,6 +1219,7 @@ class BrandSelectionPage extends StatefulWidget {
 
 class _BrandSelectionPageState extends State<BrandSelectionPage> {
   final TextEditingController _searchController = TextEditingController();
+  final FocusNode _searchFocusNode = FocusNode();
   final BrandRepository _brandRepository = BrandRepository.instance;
 
   List<StoreBrand> _brands = <StoreBrand>[];
@@ -1213,11 +1234,17 @@ class _BrandSelectionPageState extends State<BrandSelectionPage> {
   void initState() {
     super.initState();
     _loadBrands();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        _searchFocusNode.requestFocus();
+      }
+    });
   }
 
   @override
   void dispose() {
     _searchDebounce?.cancel();
+    _searchFocusNode.dispose();
     _searchController.dispose();
     super.dispose();
   }
@@ -1259,17 +1286,17 @@ class _BrandSelectionPageState extends State<BrandSelectionPage> {
 
   @override
   Widget build(BuildContext context) {
-    final String query = _search.trim().toLowerCase();
+    final String query = _normalizeSearchText(_search);
     final List<StoreBrand> localFiltered = _brands
-        .where((StoreBrand b) => b.name.toLowerCase().contains(query))
+        .where((StoreBrand b) => _normalizeSearchText(b.name).contains(query))
         .toList();
 
     final Map<String, StoreBrand> merged = <String, StoreBrand>{};
     for (final StoreBrand brand in localFiltered) {
-      merged[brand.name.toLowerCase()] = brand;
+      merged[_normalizeSearchText(brand.name)] = brand;
     }
     for (final StoreBrand brand in _remoteBrands) {
-      merged.putIfAbsent(brand.name.toLowerCase(), () => brand);
+      merged.putIfAbsent(_normalizeSearchText(brand.name), () => brand);
     }
 
     final List<StoreBrand> filtered = merged.values.toList()
@@ -1347,6 +1374,9 @@ class _BrandSelectionPageState extends State<BrandSelectionPage> {
           children: <Widget>[
             TextField(
               controller: _searchController,
+              focusNode: _searchFocusNode,
+              autofocus: true,
+              textCapitalization: TextCapitalization.words,
               onChanged: (String value) {
                 setState(() => _search = value);
                 _triggerRemoteSearch();
@@ -1760,36 +1790,51 @@ class _CardDetailPageState extends State<CardDetailPage> {
                   child: Card(
                     color: Colors.white,
                     surfaceTintColor: Colors.white,
-                    child: Padding(
-                      padding: const EdgeInsets.all(22),
-                      child: Container(
-                        color: Colors.white,
-                        padding: const EdgeInsets.all(8),
-                        child: BarcodeWidget(
-                          barcode: card.codeType == CardCodeType.qr
-                              ? Barcode.qrCode()
-                              : Barcode.code128(),
-                          data: card.cardNumber,
-                          drawText: false,
-                          width: double.infinity,
-                          height: card.codeType == CardCodeType.qr ? 240 : 120,
-                          errorBuilder: (BuildContext context, String error) {
-                            return const Center(
-                              child: Text('Numero invalide pour ce format'),
-                            );
-                          },
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(20),
+                      onTap: () => _copyCardNumber(card.cardNumber),
+                      child: Padding(
+                        padding: const EdgeInsets.all(22),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: <Widget>[
+                            Container(
+                              color: Colors.white,
+                              padding: const EdgeInsets.all(8),
+                              child: BarcodeWidget(
+                                barcode: card.codeType == CardCodeType.qr
+                                    ? Barcode.qrCode()
+                                    : Barcode.code128(),
+                                data: card.cardNumber,
+                                drawText: false,
+                                width: double.infinity,
+                                height: card.codeType == CardCodeType.qr
+                                    ? 240
+                                    : 120,
+                                errorBuilder:
+                                    (BuildContext context, String error) {
+                                      return const Center(
+                                        child: Text(
+                                          'Numero invalide pour ce format',
+                                        ),
+                                      );
+                                    },
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            SelectableText(
+                              card.cardNumber,
+                              style: const TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.black,
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                     ),
                   ),
-                ),
-              ),
-              const SizedBox(height: 12),
-              SelectableText(
-                card.cardNumber,
-                style: const TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
                 ),
               ),
               const SizedBox(height: 16),
@@ -1808,6 +1853,16 @@ class _CardDetailPageState extends State<CardDetailPage> {
     } catch (_) {
       _previousBrightness = null;
     }
+  }
+
+  Future<void> _copyCardNumber(String value) async {
+    await Clipboard.setData(ClipboardData(text: value));
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Numero copie dans le presse-papiers.')),
+    );
   }
 }
 
