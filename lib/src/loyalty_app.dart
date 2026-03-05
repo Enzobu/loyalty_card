@@ -12,7 +12,7 @@ import 'package:http/http.dart' as http;
 import 'package:mobile_scanner/mobile_scanner.dart' as ms;
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
-import 'package:reorderable_grid_view/reorderable_grid_view.dart';
+
 import 'package:screen_brightness/screen_brightness.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -430,6 +430,7 @@ class LoyaltyCardModel {
     required this.cardNumber,
     required this.codeType,
     required this.createdAt,
+    this.clickCount = 0,
   });
 
   final String id;
@@ -439,6 +440,7 @@ class LoyaltyCardModel {
   final String cardNumber;
   final CardCodeType codeType;
   final DateTime createdAt;
+  final int clickCount;
 
   LoyaltyCardModel copyWith({
     String? brandId,
@@ -446,6 +448,7 @@ class LoyaltyCardModel {
     String? brandLogoUrl,
     String? cardNumber,
     CardCodeType? codeType,
+    int? clickCount,
   }) {
     return LoyaltyCardModel(
       id: id,
@@ -455,6 +458,7 @@ class LoyaltyCardModel {
       cardNumber: cardNumber ?? this.cardNumber,
       codeType: codeType ?? this.codeType,
       createdAt: createdAt,
+      clickCount: clickCount ?? this.clickCount,
     );
   }
 
@@ -467,6 +471,7 @@ class LoyaltyCardModel {
       'cardNumber': cardNumber,
       'codeType': codeType.name,
       'createdAt': createdAt.toIso8601String(),
+      'clickCount': clickCount,
     };
   }
 
@@ -481,6 +486,7 @@ class LoyaltyCardModel {
           ? CardCodeType.qr
           : CardCodeType.barcode,
       createdAt: DateTime.parse(json['createdAt'] as String),
+      clickCount: json['clickCount'] as int? ?? 0,
     );
   }
 }
@@ -679,6 +685,9 @@ class AppState extends ChangeNotifier {
           cardNumber: imported.cardNumber,
           codeType: imported.codeType,
           createdAt: existing.createdAt,
+          clickCount: imported.clickCount > existing.clickCount
+              ? imported.clickCount
+              : existing.clickCount,
         );
         replaced += 1;
         continue;
@@ -695,6 +704,7 @@ class AppState extends ChangeNotifier {
           cardNumber: imported.cardNumber,
           codeType: imported.codeType,
           createdAt: imported.createdAt,
+          clickCount: imported.clickCount,
         ),
       );
       added += 1;
@@ -723,10 +733,24 @@ class AppState extends ChangeNotifier {
       cardNumber: cardNumber,
       codeType: codeType,
       createdAt: DateTime.now(),
+      clickCount: 0,
     );
     _cards.add(newCard);
     await _saveCards();
     notifyListeners();
+  }
+
+  Future<void> incrementCardClick(String id) async {
+    final int index = _cards.indexWhere((LoyaltyCardModel c) => c.id == id);
+    if (index == -1) {
+      return;
+    }
+
+    _cards[index] = _cards[index].copyWith(
+      clickCount: _cards[index].clickCount + 1,
+    );
+    // Sauvegarde en arrière-plan sans notifier pour ne pas causer de saccades
+    unawaited(_saveCards());
   }
 
   Future<void> updateCard(
@@ -1028,22 +1052,24 @@ class _HomePageState extends State<HomePage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-          children: <Widget>[
-            _buildHeader(),
-            const SizedBox(height: 24),
-            _buildSearchBar(),
-            const SizedBox(height: 32),
-            _buildMostUsedSection(context),
-            const SizedBox(height: 32),
-            _buildNearbyOffersSection(context),
-            const SizedBox(height: 80), // Fab space padding
-          ],
-        ),
-      ),
+    return Consumer<AppState>(
+      builder: (BuildContext context, AppState state, Widget? child) {
+        return Scaffold(
+          body: SafeArea(
+            child: ListView(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+              children: <Widget>[
+                _buildHeader(),
+                const SizedBox(height: 24),
+                _buildSearchBar(),
+                const SizedBox(height: 32),
+                _buildMostUsedSection(context, state),
+                const SizedBox(height: 80),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -1070,7 +1096,9 @@ class _HomePageState extends State<HomePage> {
         Container(
           padding: const EdgeInsets.all(10),
           decoration: BoxDecoration(
-            color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.05),
+            color: Theme.of(
+              context,
+            ).colorScheme.onSurface.withValues(alpha: 0.05),
             shape: BoxShape.circle,
           ),
           child: const Icon(Icons.notifications_none_rounded),
@@ -1103,278 +1131,165 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  Widget _buildMostUsedSection(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: <Widget>[
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: <Widget>[
-            const Text(
-              'Most Used Cards',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
-            ),
-            Text(
-              'View All',
-              style: TextStyle(
-                color: const Color(0xFF2B5CFA),
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 16),
-        Container(
-          width: double.infinity,
-          height: 200,
-          decoration: BoxDecoration(
-            gradient: const LinearGradient(
-              colors: [Color(0xFF1A8C4A), Color(0xFF0F602F)],
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-            ),
-            borderRadius: BorderRadius.circular(24),
-            boxShadow: [
-              BoxShadow(
-                color: const Color(0xFF1A8C4A).withValues(alpha: 0.3),
-                blurRadius: 16,
-                offset: const Offset(0, 8),
-              ),
-            ],
-          ),
-          padding: const EdgeInsets.all(24),
-          child: Stack(
-            children: <Widget>[
-              // Logo
-              Positioned(
-                top: 0,
-                left: 0,
-                child: Container(
-                  padding: const EdgeInsets.all(4),
-                  decoration: const BoxDecoration(
-                    color: Colors.white,
-                    shape: BoxShape.circle,
-                  ),
-                  child: CircleAvatar(
-                    radius: 20,
-                    backgroundColor: Colors.white,
-                    backgroundImage: const NetworkImage(
-                      'https://upload.wikimedia.org/wikipedia/en/thumb/d/d3/Starbucks_Corporation_Logo_2011.svg/1200px-Starbucks_Corporation_Logo_2011.svg.png',
-                    ),
-                  ),
-                ),
-              ),
-              // Stars
-              Positioned(
-                bottom: 0,
-                left: 0,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: const <Widget>[
-                    Text(
-                      'GOLD MEMBER',
-                      style: TextStyle(
-                        color: Colors.white70,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 1.2,
-                        fontSize: 11,
-                      ),
-                    ),
-                    SizedBox(height: 4),
-                    Text(
-                      '1,240 Stars',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w800,
-                        fontSize: 24,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              // NFC Icon
-              Positioned(
-                bottom: 0,
-                right: 0,
-                child: Icon(
-                  Icons.contactless_outlined,
-                  color: Colors.white.withValues(alpha: 0.8),
-                  size: 32,
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 16),
-        const Text(
-          'Starbucks Coffee',
-          style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
-        ),
-      ],
-    );
-  }
+  Widget _buildMostUsedSection(BuildContext context, AppState state) {
+    if (!state.isLoaded || state.filteredCards.isEmpty) {
+      return const SizedBox.shrink();
+    }
 
-  Widget _buildNearbyOffersSection(BuildContext context) {
+    final List<LoyaltyCardModel> sortedCards =
+        List<LoyaltyCardModel>.of(state.filteredCards)..sort(
+          (LoyaltyCardModel a, LoyaltyCardModel b) =>
+              b.clickCount.compareTo(a.clickCount),
+        );
+
+    final List<LoyaltyCardModel> topCards = sortedCards.take(3).toList();
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: <Widget>[
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: <Widget>[
-            const Text(
-              'Nearby Offers',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
-            ),
-            Row(
-              children: <Widget>[
-                const Icon(
-                  Icons.location_on_outlined,
-                  color: Color(0xFF2B5CFA),
-                  size: 16,
-                ),
-                const SizedBox(width: 4),
-                const Text(
-                  'New York, NY',
-                  style: TextStyle(
-                    color: Color(0xFF2B5CFA),
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-              ],
-            ),
-          ],
+        const Text(
+          'Mes cartes les plus utilisées',
+          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
         ),
         const SizedBox(height: 16),
-        _OfferCard(
-          brandName: 'Whole Foods Market',
-          distance: '0.4 miles away',
-          description: 'Get 15% back on all organic produce this week.',
-          badgeText: '15%\nOFF',
-          imageUrl:
-              'https://images.unsplash.com/photo-1542838132-92c53300491e?auto=format&fit=crop&q=80&w=200&h=200',
-        ),
-        const SizedBox(height: 12),
-        _OfferCard(
-          brandName: 'Blue Bottle',
-          distance: '0.8 miles away',
-          description: 'Free pastry with any large coffee purchase.',
-          badgeText: 'FREE\nITEM',
-          imageUrl:
-              'https://images.unsplash.com/photo-1554118811-1e0d58224f24?auto=format&fit=crop&q=80&w=200&h=200',
+        SizedBox(
+          height: 220,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            itemCount: topCards.length,
+            separatorBuilder: (BuildContext context, int index) =>
+                const SizedBox(width: 16),
+            itemBuilder: (BuildContext context, int index) {
+              final LoyaltyCardModel card = topCards[index];
+              return SizedBox(width: 300, child: ModernCardWidget(card: card));
+            },
+          ),
         ),
       ],
     );
   }
 }
 
-class _OfferCard extends StatelessWidget {
-  const _OfferCard({
-    required this.brandName,
-    required this.distance,
-    required this.description,
-    required this.badgeText,
-    required this.imageUrl,
-  });
+class ModernCardWidget extends StatelessWidget {
+  const ModernCardWidget({required this.card, super.key});
 
-  final String brandName;
-  final String distance;
-  final String description;
-  final String badgeText;
-  final String imageUrl;
+  final LoyaltyCardModel card;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      decoration: BoxDecoration(
-        color: Theme.of(context).cardTheme.color,
-        borderRadius: BorderRadius.circular(20),
-      ),
-      padding: const EdgeInsets.all(16),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: <Widget>[
-          // Image
-          ClipRRect(
-            borderRadius: BorderRadius.circular(12),
-            child: Image.network(
-              imageUrl,
-              width: 80,
-              height: 80,
-              fit: BoxFit.cover,
-            ),
+    final bool isDark = Theme.of(context).brightness == Brightness.dark;
+    final List<Color> gradientColors = isDark
+        ? const <Color>[Color(0xFF2C3E50), Color(0xFF000000)]
+        : const <Color>[Color(0xFF2B5CFA), Color(0xFF0F2027)];
+
+    return GestureDetector(
+      onTap: () {
+        context.read<AppState>().incrementCardClick(card.id);
+        Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder: (_) => CardDetailPage(cardId: card.id),
           ),
-          const SizedBox(width: 16),
-          // Content
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: <Widget>[
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: <Widget>[
-                          Text(
-                            brandName,
-                            style: const TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.w800,
-                              height: 1.2,
-                            ),
+        );
+      },
+      child: Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: gradientColors,
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+          borderRadius: BorderRadius.circular(24),
+          boxShadow: <BoxShadow>[
+            BoxShadow(
+              color: gradientColors.first.withValues(alpha: 0.3),
+              blurRadius: 16,
+              offset: const Offset(0, 8),
+            ),
+          ],
+        ),
+        padding: const EdgeInsets.all(24),
+        child: Stack(
+          children: <Widget>[
+            // Positioned Logo
+            Positioned(
+              top: 0,
+              left: 0,
+              child: Container(
+                padding: const EdgeInsets.all(4),
+                decoration: const BoxDecoration(
+                  color: Colors.white,
+                  shape: BoxShape.circle,
+                ),
+                child: CircleAvatar(
+                  radius: 20,
+                  backgroundColor: Colors.white,
+                  backgroundImage: card.brandLogoUrl != null
+                      ? NetworkImage(card.brandLogoUrl!)
+                      : null,
+                  child: card.brandLogoUrl == null
+                      ? Text(
+                          card.brandName[0].toUpperCase(),
+                          style: const TextStyle(
+                            color: Colors.black,
+                            fontWeight: FontWeight.bold,
                           ),
-                          const SizedBox(height: 4),
-                          Text(
-                            distance,
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: Theme.of(
-                                context,
-                              ).colorScheme.onSurface.withValues(alpha: 0.5),
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ],
-                      ),
+                        )
+                      : null,
+                ),
+              ),
+            ),
+            // Info
+            Positioned(
+              bottom: 0,
+              left: 0,
+              right: 0,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Text(
+                    card.brandName.toUpperCase(),
+                    style: const TextStyle(
+                      color: Colors.white70,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 1.2,
+                      fontSize: 11,
                     ),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 6,
-                      ),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF2B5CFA).withValues(alpha: 0.1),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Text(
-                        badgeText,
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(
-                          color: Color(0xFF2B5CFA),
-                          fontSize: 10,
-                          fontWeight: FontWeight.w800,
-                          height: 1.2,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 4),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Expanded(
+                        child: Text(
+                          card.cardNumber,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w800,
+                            fontSize: 20,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                         ),
                       ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 10),
-                Text(
-                  description,
-                  style: TextStyle(
-                    fontSize: 13,
-                    color: Theme.of(
-                      context,
-                    ).colorScheme.onSurface.withValues(alpha: 0.7),
-                    height: 1.4,
+                    ],
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
-        ],
+            // NFC Icon
+            Positioned(
+              bottom: 0,
+              right: 0,
+              child: Icon(
+                Icons.contactless_outlined,
+                color: Colors.white.withValues(alpha: 0.8),
+                size: 32,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1412,7 +1327,11 @@ class _CardsPageState extends State<CardsPage> {
 
         return Scaffold(
           appBar: AppBar(
-            title: const Text('Mes cartes'),
+            title: const Text(
+              'Mes cartes',
+              style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800),
+            ),
+            backgroundColor: Colors.transparent,
             actions: <Widget>[
               IconButton(
                 onPressed: () {
@@ -1428,7 +1347,7 @@ class _CardsPageState extends State<CardsPage> {
           ),
           body: SafeArea(
             child: Padding(
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
               child: Column(
                 children: <Widget>[
                   Row(
@@ -1439,9 +1358,29 @@ class _CardsPageState extends State<CardsPage> {
                           focusNode: _searchFocusNode,
                           textCapitalization: TextCapitalization.words,
                           onChanged: state.setSearchQuery,
-                          decoration: const InputDecoration(
+                          decoration: InputDecoration(
                             hintText: 'Rechercher une carte',
-                            prefixIcon: Icon(Icons.search),
+                            hintStyle: TextStyle(
+                              color: Theme.of(
+                                context,
+                              ).colorScheme.onSurface.withValues(alpha: 0.4),
+                              fontWeight: FontWeight.w500,
+                            ),
+                            prefixIcon: Icon(
+                              Icons.search_rounded,
+                              color: Theme.of(
+                                context,
+                              ).colorScheme.onSurface.withValues(alpha: 0.4),
+                            ),
+                            filled: true,
+                            fillColor: Theme.of(context).cardTheme.color,
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(16),
+                              borderSide: BorderSide.none,
+                            ),
+                            contentPadding: const EdgeInsets.symmetric(
+                              vertical: 18,
+                            ),
                           ),
                         ),
                       ),
@@ -1449,10 +1388,8 @@ class _CardsPageState extends State<CardsPage> {
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 12),
                         decoration: BoxDecoration(
-                          color: Theme.of(
-                            context,
-                          ).inputDecorationTheme.fillColor,
-                          borderRadius: BorderRadius.circular(14),
+                          color: Theme.of(context).cardTheme.color,
+                          borderRadius: BorderRadius.circular(16),
                         ),
                         child: DropdownButtonHideUnderline(
                           child: DropdownButton<CardSortMode>(
@@ -1482,36 +1419,27 @@ class _CardsPageState extends State<CardsPage> {
                     child: cards.isEmpty
                         ? const _EmptyState()
                         : state.sortMode == CardSortMode.custom
-                        ? ReorderableGridView.builder(
+                        ? ReorderableListView.builder(
                             itemCount: cards.length,
-                            dragEnabled: true,
                             onReorder: state.reorderCustom,
-                            gridDelegate:
-                                const SliverGridDelegateWithFixedCrossAxisCount(
-                                  crossAxisCount: 2,
-                                  mainAxisSpacing: 12,
-                                  crossAxisSpacing: 12,
-                                  childAspectRatio: 1.1,
-                                ),
+                            padding: const EdgeInsets.only(bottom: 24),
                             itemBuilder: (BuildContext context, int index) {
                               final LoyaltyCardModel card = cards[index];
-                              return _CardTile(
+                              return Padding(
                                 key: ValueKey<String>(card.id),
-                                card: card,
+                                padding: const EdgeInsets.only(bottom: 16),
+                                child: ModernCardWidget(card: card),
                               );
                             },
                           )
-                        : GridView.builder(
+                        : ListView.separated(
                             itemCount: cards.length,
-                            gridDelegate:
-                                const SliverGridDelegateWithFixedCrossAxisCount(
-                                  crossAxisCount: 2,
-                                  mainAxisSpacing: 12,
-                                  crossAxisSpacing: 12,
-                                  childAspectRatio: 1.1,
-                                ),
+                            padding: const EdgeInsets.only(bottom: 24),
+                            separatorBuilder:
+                                (BuildContext context, int index) =>
+                                    const SizedBox(height: 16),
                             itemBuilder: (BuildContext context, int index) {
-                              return _CardTile(card: cards[index]);
+                              return ModernCardWidget(card: cards[index]);
                             },
                           ),
                   ),
@@ -1526,15 +1454,10 @@ class _CardsPageState extends State<CardsPage> {
 }
 
 class _BrandAvatar extends StatelessWidget {
-  const _BrandAvatar({
-    required this.name,
-    required this.logoUrl,
-    this.radius = 18,
-  });
+  const _BrandAvatar({required this.name, required this.logoUrl});
 
   final String name;
   final String? logoUrl;
-  final double radius;
 
   @override
   Widget build(BuildContext context) {
@@ -1542,7 +1465,7 @@ class _BrandAvatar extends StatelessWidget {
 
     if (logoUrl == null || logoUrl!.isEmpty) {
       return CircleAvatar(
-        radius: radius,
+        radius: 18,
         backgroundColor: Theme.of(context).colorScheme.primaryContainer,
         child: Text(
           firstLetter,
@@ -1555,13 +1478,13 @@ class _BrandAvatar extends StatelessWidget {
     }
 
     return CircleAvatar(
-      radius: radius,
+      radius: 18,
       backgroundColor: Theme.of(context).colorScheme.primaryContainer,
       child: ClipOval(
         child: Image.network(
           logoUrl!,
-          width: radius * 2,
-          height: radius * 2,
+          width: 36,
+          height: 36,
           fit: BoxFit.cover,
           errorBuilder:
               (BuildContext context, Object error, StackTrace? stackTrace) {
@@ -1581,65 +1504,6 @@ class _BrandAvatar extends StatelessWidget {
   }
 }
 
-class _CardTile extends StatelessWidget {
-  const _CardTile({required this.card, super.key});
-
-  final LoyaltyCardModel card;
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: () {
-          Navigator.of(context).push(
-            MaterialPageRoute<void>(
-              builder: (_) => CardDetailPage(cardId: card.id),
-            ),
-          );
-        },
-        child: Padding(
-          padding: const EdgeInsets.all(14),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: <Widget>[
-              _BrandAvatar(
-                name: card.brandName,
-                logoUrl: card.brandLogoUrl,
-                radius: 20,
-              ),
-              const Spacer(),
-              Text(
-                card.brandName,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  fontWeight: FontWeight.w700,
-                  fontSize: 16,
-                ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                _maskCardNumber(card.cardNumber),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  static String _maskCardNumber(String value) {
-    if (value.length <= 6) {
-      return value;
-    }
-    final String tail = value.substring(value.length - 6);
-    return '...$tail';
-  }
-}
-
 class _EmptyState extends StatelessWidget {
   const _EmptyState();
 
@@ -1649,18 +1513,34 @@ class _EmptyState extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: <Widget>[
-          Icon(
-            Icons.wallet_outlined,
-            size: 52,
-            color: Theme.of(context).colorScheme.primary,
+          Container(
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              color: Theme.of(
+                context,
+              ).colorScheme.primary.withValues(alpha: 0.1),
+              shape: BoxShape.circle,
+            ),
+            child: Icon(
+              Icons.wallet_rounded,
+              size: 48,
+              color: Theme.of(context).colorScheme.primary,
+            ),
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 24),
           const Text(
-            'Aucune carte pour le moment',
-            style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
+            'Aucune carte',
+            style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
           ),
-          const SizedBox(height: 4),
-          const Text('Ajoute une carte avec le bouton +'),
+          const SizedBox(height: 8),
+          Text(
+            'Ajoute ta première carte avec le bouton +',
+            style: TextStyle(
+              color: Theme.of(
+                context,
+              ).colorScheme.onSurface.withValues(alpha: 0.6),
+            ),
+          ),
         ],
       ),
     );
@@ -2000,9 +1880,19 @@ class _CardFormPageState extends State<CardFormPage> {
               const SizedBox(height: 16),
               TextFormField(
                 controller: _numberController,
-                decoration: const InputDecoration(
-                  labelText: 'Numero de carte',
-                  hintText: 'Saisis le numero',
+                decoration: InputDecoration(
+                  labelText: 'Numéro de carte',
+                  hintText: 'Saisis le numéro',
+                  filled: true,
+                  fillColor: Theme.of(context).inputDecorationTheme.fillColor,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(16),
+                    borderSide: BorderSide.none,
+                  ),
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 18,
+                  ),
                 ),
                 validator: (String? value) {
                   if (value == null || value.trim().isEmpty) {
@@ -2014,16 +1904,34 @@ class _CardFormPageState extends State<CardFormPage> {
                   return null;
                 },
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: 16),
               OutlinedButton.icon(
                 onPressed: _openScanner,
-                icon: const Icon(Icons.photo_camera_outlined),
-                label: const Text('Scanner avec la camera'),
+                icon: const Icon(Icons.document_scanner_rounded),
+                label: const Text('Scanner avec la caméra'),
+                style: OutlinedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                ),
               ),
-              const SizedBox(height: 20),
+              const SizedBox(height: 24),
               FilledButton(
                 onPressed: _save,
-                child: Text(_isEdit ? 'Mettre a jour' : 'Ajouter la carte'),
+                style: FilledButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                ),
+                child: Text(
+                  _isEdit ? 'Mettre à jour' : 'Ajouter la carte',
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
               ),
             ],
           ),
@@ -2091,7 +1999,11 @@ class _ScannerPageState extends State<ScannerPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Scanner la carte')),
+      appBar: AppBar(
+        title: const Text('Scanner la carte'),
+        backgroundColor: Colors.transparent,
+      ),
+      extendBodyBehindAppBar: true,
       body: Stack(
         children: <Widget>[
           ms.MobileScanner(
@@ -2114,13 +2026,28 @@ class _ScannerPageState extends State<ScannerPage> {
               Navigator.of(context).pop(value.trim());
             },
           ),
+          // Calque semi-transparent
+          Container(
+            decoration: ShapeDecoration(
+              shape: _ScannerOverlayShape(
+                borderColor: Theme.of(context).colorScheme.primary,
+                borderWidth: 4.0,
+              ),
+            ),
+          ),
           const Align(
             alignment: Alignment.bottomCenter,
             child: Padding(
-              padding: EdgeInsets.all(16),
+              padding: EdgeInsets.symmetric(horizontal: 24, vertical: 48),
               child: Text(
-                'Positionne le code-barres ou QR code dans le cadre.',
+                'Positionne le code-barres ou QR code dans le cadre d\'analyse.',
                 textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                  shadows: [Shadow(color: Colors.black54, blurRadius: 4)],
+                ),
               ),
             ),
           ),
@@ -2128,6 +2055,102 @@ class _ScannerPageState extends State<ScannerPage> {
       ),
     );
   }
+}
+
+class _ScannerOverlayShape extends ShapeBorder {
+  const _ScannerOverlayShape({
+    this.borderColor = Colors.white,
+    this.borderWidth = 1.0,
+  }) : overlayColor = const Color(0x99000000);
+
+  final Color borderColor;
+  final double borderWidth;
+  final Color overlayColor;
+
+  @override
+  EdgeInsetsGeometry get dimensions => const EdgeInsets.all(10);
+
+  @override
+  Path getInnerPath(Rect rect, {TextDirection? textDirection}) {
+    return Path()
+      ..fillType = PathFillType.evenOdd
+      ..addPath(getOuterPath(rect), Offset.zero);
+  }
+
+  @override
+  Path getOuterPath(Rect rect, {TextDirection? textDirection}) {
+    Path getLeftTopPath(Rect rect) {
+      return Path()
+        ..moveTo(rect.left, rect.bottom)
+        ..lineTo(rect.left, rect.top)
+        ..lineTo(rect.right, rect.top);
+    }
+
+    return getLeftTopPath(rect)
+      ..lineTo(rect.right, rect.bottom)
+      ..lineTo(rect.left, rect.bottom)
+      ..close();
+  }
+
+  @override
+  void paint(Canvas canvas, Rect rect, {TextDirection? textDirection}) {
+    final double width = rect.width;
+    final double height = rect.height;
+    final double cutoutWidth = width * 0.8;
+    final double cutoutHeight = cutoutWidth / 1.5;
+
+    final Rect cutoutRect = Rect.fromCenter(
+      center: Offset(width / 2, height / 2.5),
+      width: cutoutWidth,
+      height: cutoutHeight,
+    );
+
+    final Path backgroundPath = Path()..addRect(rect);
+    final Path cutoutPath = Path()
+      ..addRRect(
+        RRect.fromRectAndRadius(cutoutRect, const Radius.circular(16)),
+      );
+
+    final Path backgroundWithCutout = Path.combine(
+      PathOperation.difference,
+      backgroundPath,
+      cutoutPath,
+    );
+
+    final Paint backgroundPaint = Paint()
+      ..color = overlayColor
+      ..style = PaintingStyle.fill;
+
+    canvas.drawPath(backgroundWithCutout, backgroundPaint);
+
+    final Paint borderPaint = Paint()
+      ..color = borderColor
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = borderWidth;
+
+    // Coins décoratifs de la visée
+    final double dx = cutoutRect.left;
+    final double dy = cutoutRect.top;
+    final double dxr = cutoutRect.right;
+    final double dyb = cutoutRect.bottom;
+    const double length = 30.0;
+
+    canvas.drawPath(
+      Path()
+        ..moveTo(dx, dy + length)
+        ..quadraticBezierTo(dx, dy, dx + length, dy)
+        ..moveTo(dxr - length, dy)
+        ..quadraticBezierTo(dxr, dy, dxr, dy + length)
+        ..moveTo(dxr, dyb - length)
+        ..quadraticBezierTo(dxr, dyb, dxr - length, dyb)
+        ..moveTo(dx + length, dyb)
+        ..quadraticBezierTo(dx, dyb, dx, dyb - length),
+      borderPaint,
+    );
+  }
+
+  @override
+  ShapeBorder scale(double t) => this;
 }
 
 class CardDetailPage extends StatefulWidget {
@@ -2170,8 +2193,17 @@ class _CardDetailPageState extends State<CardDetailPage> {
     return Scaffold(
       appBar: AppBar(
         title: Text(card.brandName),
+        backgroundColor: Colors.transparent,
         actions: <Widget>[
+          IconButton(
+            onPressed: () => _copyCardNumber(card.cardNumber),
+            icon: const Icon(Icons.share_rounded),
+          ),
           PopupMenuButton<String>(
+            icon: const Icon(Icons.more_vert_rounded),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+            ),
             onSelected: (String action) async {
               if (action == 'edit') {
                 final StoreBrand brand = StoreBrand(
@@ -2194,13 +2226,16 @@ class _CardDetailPageState extends State<CardDetailPage> {
                   builder: (BuildContext context) {
                     return AlertDialog(
                       title: const Text('Supprimer cette carte ?'),
-                      content: const Text('Cette action est definitive.'),
+                      content: const Text('Cette action est définitive.'),
                       actions: <Widget>[
                         TextButton(
                           onPressed: () => Navigator.of(context).pop(false),
                           child: const Text('Annuler'),
                         ),
                         FilledButton(
+                          style: FilledButton.styleFrom(
+                            backgroundColor: Colors.red.shade600,
+                          ),
                           onPressed: () => Navigator.of(context).pop(true),
                           child: const Text('Supprimer'),
                         ),
@@ -2217,14 +2252,32 @@ class _CardDetailPageState extends State<CardDetailPage> {
                 }
               }
             },
-            itemBuilder: (BuildContext context) =>
-                const <PopupMenuEntry<String>>[
-                  PopupMenuItem<String>(value: 'edit', child: Text('Modifier')),
-                  PopupMenuItem<String>(
-                    value: 'delete',
-                    child: Text('Supprimer'),
-                  ),
-                ],
+            itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
+              const PopupMenuItem<String>(
+                value: 'edit',
+                child: Row(
+                  children: [
+                    Icon(Icons.edit_rounded, size: 20),
+                    SizedBox(width: 12),
+                    Text('Modifier'),
+                  ],
+                ),
+              ),
+              const PopupMenuItem<String>(
+                value: 'delete',
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.delete_outline_rounded,
+                      size: 20,
+                      color: Colors.red,
+                    ),
+                    SizedBox(width: 12),
+                    Text('Supprimer', style: TextStyle(color: Colors.red)),
+                  ],
+                ),
+              ),
+            ],
           ),
         ],
       ),
@@ -2238,56 +2291,87 @@ class _CardDetailPageState extends State<CardDetailPage> {
                 card.brandName,
                 style: const TextStyle(
                   fontSize: 28,
-                  fontWeight: FontWeight.w700,
+                  fontWeight: FontWeight.w800,
                 ),
               ),
-              const SizedBox(height: 26),
+              const SizedBox(height: 32),
               Expanded(
                 child: Center(
-                  child: Card(
-                    color: Colors.white,
-                    surfaceTintColor: Colors.white,
-                    child: InkWell(
-                      borderRadius: BorderRadius.circular(20),
-                      onTap: () => _copyCardNumber(card.cardNumber),
-                      child: Padding(
-                        padding: const EdgeInsets.all(22),
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: <Widget>[
-                            Container(
-                              color: Colors.white,
-                              padding: const EdgeInsets.all(8),
-                              child: BarcodeWidget(
-                                barcode: card.codeType == CardCodeType.qr
-                                    ? Barcode.qrCode()
-                                    : Barcode.code128(),
-                                data: card.cardNumber,
-                                drawText: false,
-                                width: double.infinity,
-                                height: card.codeType == CardCodeType.qr
-                                    ? 240
-                                    : 120,
-                                errorBuilder:
-                                    (BuildContext context, String error) {
-                                      return const Center(
-                                        child: Text(
-                                          'Numero invalide pour ce format',
-                                        ),
-                                      );
-                                    },
-                              ),
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(24),
+                      boxShadow: <BoxShadow>[
+                        BoxShadow(
+                          color: Theme.of(
+                            context,
+                          ).shadowColor.withValues(alpha: 0.08),
+                          blurRadius: 24,
+                          offset: const Offset(0, 12),
+                        ),
+                      ],
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(24),
+                      child: Material(
+                        color: Colors.transparent,
+                        child: InkWell(
+                          onTap: () => _copyCardNumber(card.cardNumber),
+                          child: Padding(
+                            padding: const EdgeInsets.all(28),
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: <Widget>[
+                                Container(
+                                  padding: const EdgeInsets.all(12),
+                                  color: Colors.white,
+                                  child: BarcodeWidget(
+                                    barcode: card.codeType == CardCodeType.qr
+                                        ? Barcode.qrCode()
+                                        : Barcode.code128(),
+                                    data: card.cardNumber,
+                                    drawText: false,
+                                    color: const Color(0xFF0F172A),
+                                    width: double.infinity,
+                                    height: card.codeType == CardCodeType.qr
+                                        ? 200
+                                        : 100,
+                                    errorBuilder:
+                                        (BuildContext context, String error) {
+                                          return const Center(
+                                            child: Text(
+                                              'Numero invalide pour ce format',
+                                              style: TextStyle(
+                                                color: Colors.black54,
+                                              ),
+                                            ),
+                                          );
+                                        },
+                                  ),
+                                ),
+                                const SizedBox(height: 24),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 16,
+                                    vertical: 8,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFFF1F5F9),
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: SelectableText(
+                                    card.cardNumber,
+                                    style: const TextStyle(
+                                      fontSize: 18,
+                                      letterSpacing: 2,
+                                      fontWeight: FontWeight.w700,
+                                      color: Color(0xFF0F172A),
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ),
-                            const SizedBox(height: 12),
-                            SelectableText(
-                              card.cardNumber,
-                              style: const TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w600,
-                                color: Colors.black,
-                              ),
-                            ),
-                          ],
+                          ),
                         ),
                       ),
                     ),
@@ -2338,93 +2422,216 @@ class _SettingsPageState extends State<SettingsPage> {
   Widget build(BuildContext context) {
     final AppState state = context.watch<AppState>();
     return Scaffold(
-      appBar: AppBar(title: const Text('Parametres')),
-      body: Padding(
-        padding: const EdgeInsets.all(16),
+      appBar: AppBar(
+        title: const Text('Paramètres'),
+        backgroundColor: Colors.transparent,
+      ),
+      body: SafeArea(
         child: ListView(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
           children: <Widget>[
-            const Text(
-              'Theme',
-              style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
-            ),
-            const SizedBox(height: 6),
-            const Text('Choisis le mode de couleur de l\'application'),
-            const SizedBox(height: 16),
-            SegmentedButton<AppThemePreference>(
-              segments: const <ButtonSegment<AppThemePreference>>[
-                ButtonSegment<AppThemePreference>(
-                  value: AppThemePreference.system,
-                  label: Text('Systeme'),
-                  icon: Icon(Icons.phone_android),
+            const Padding(
+              padding: EdgeInsets.only(left: 4, bottom: 12),
+              child: Text(
+                'Thème',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 0.5,
                 ),
-                ButtonSegment<AppThemePreference>(
-                  value: AppThemePreference.light,
-                  label: Text('Clair'),
-                  icon: Icon(Icons.light_mode),
-                ),
-                ButtonSegment<AppThemePreference>(
-                  value: AppThemePreference.dark,
-                  label: Text('Sombre'),
-                  icon: Icon(Icons.dark_mode),
-                ),
-              ],
-              selected: <AppThemePreference>{state.themePreference},
-              onSelectionChanged: (Set<AppThemePreference> values) {
-                unawaited(state.setThemePreference(values.first));
-              },
+              ),
             ),
-            const SizedBox(height: 28),
-            const Text(
-              'Sauvegarde',
-              style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
-            ),
-            const SizedBox(height: 6),
-            const Text(
-              'Exporte tes cartes en JSON dans Telechargements ou importe un fichier JSON.',
-            ),
-            const SizedBox(height: 16),
-            Row(
-              children: <Widget>[
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: _isExporting || _isImporting
-                        ? null
-                        : _exportJson,
-                    icon: _isExporting
-                        ? const SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(Icons.upload_file_outlined),
-                    label: const Text('Exporter JSON'),
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Theme.of(context).cardTheme.color,
+                borderRadius: BorderRadius.circular(20),
+                boxShadow: [
+                  BoxShadow(
+                    color: Theme.of(
+                      context,
+                    ).shadowColor.withValues(alpha: 0.05),
+                    blurRadius: 10,
+                    offset: const Offset(0, 4),
                   ),
+                ],
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Choisissez le mode de couleur de l\'application',
+                    style: TextStyle(
+                      color: Theme.of(
+                        context,
+                      ).colorScheme.onSurface.withValues(alpha: 0.6),
+                      fontSize: 13,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    width: double.infinity,
+                    child: SegmentedButton<AppThemePreference>(
+                      segments: const <ButtonSegment<AppThemePreference>>[
+                        ButtonSegment<AppThemePreference>(
+                          value: AppThemePreference.system,
+                          label: Text('Système'),
+                          icon: Icon(Icons.phone_android_rounded),
+                        ),
+                        ButtonSegment<AppThemePreference>(
+                          value: AppThemePreference.light,
+                          label: Text('Clair'),
+                          icon: Icon(Icons.light_mode_rounded),
+                        ),
+                        ButtonSegment<AppThemePreference>(
+                          value: AppThemePreference.dark,
+                          label: Text('Sombre'),
+                          icon: Icon(Icons.dark_mode_rounded),
+                        ),
+                      ],
+                      selected: <AppThemePreference>{state.themePreference},
+                      onSelectionChanged: (Set<AppThemePreference> values) {
+                        unawaited(state.setThemePreference(values.first));
+                      },
+                      style: SegmentedButton.styleFrom(
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 32),
+            const Padding(
+              padding: EdgeInsets.only(left: 4, bottom: 12),
+              child: Text(
+                'Sauvegarde',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 0.5,
                 ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: FilledButton.icon(
-                    onPressed: _isImporting || _isExporting
-                        ? null
-                        : _importJson,
-                    icon: _isImporting
-                        ? const SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              color: Colors.white,
+              ),
+            ),
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Theme.of(context).cardTheme.color,
+                borderRadius: BorderRadius.circular(20),
+                boxShadow: [
+                  BoxShadow(
+                    color: Theme.of(
+                      context,
+                    ).shadowColor.withValues(alpha: 0.05),
+                    blurRadius: 10,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Exportez vos cartes ou restaurez une sauvegarde existante (JSON).',
+                    style: TextStyle(
+                      color: Theme.of(
+                        context,
+                      ).colorScheme.onSurface.withValues(alpha: 0.6),
+                      fontSize: 13,
+                      height: 1.4,
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  Row(
+                    children: <Widget>[
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: _isExporting || _isImporting
+                              ? null
+                              : _exportJson,
+                          icon: _isExporting
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Icon(Icons.upload_file_rounded),
+                          label: const Text('Exporter'),
+                          style: OutlinedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(vertical: 16),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
                             ),
-                          )
-                        : const Icon(Icons.download_outlined),
-                    label: const Text('Importer JSON'),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: FilledButton.icon(
+                          onPressed: _isImporting || _isExporting
+                              ? null
+                              : _importJson,
+                          icon: _isImporting
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: Colors.white,
+                                  ),
+                                )
+                              : const Icon(Icons.download_rounded),
+                          label: const Text('Importer'),
+                          style: FilledButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(vertical: 16),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              'Import: remplace une carte existante si le numero est identique (espaces et tirets ignores).',
-              style: TextStyle(fontSize: 12),
+                  const SizedBox(height: 16),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Theme.of(
+                        context,
+                      ).colorScheme.secondaryContainer.withValues(alpha: 0.5),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Icon(
+                          Icons.info_outline_rounded,
+                          size: 16,
+                          color: Theme.of(
+                            context,
+                          ).colorScheme.onSecondaryContainer,
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'Lors de l\'import, les cartes ayant le même numéro remplacent les cartes existantes.',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Theme.of(
+                                context,
+                              ).colorScheme.onSecondaryContainer,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
             ),
           ],
         ),
